@@ -8,8 +8,10 @@ interface Farmstand {
   city: string | null;
   state: string | null;
   description: string | null;
-  cover_photo_url: string | null;
+  hero_image_url: string | null;
+  image_url: string | null;
   slug: string;
+  listing_status: string;
 }
 
 async function getFarmstand(slug: string): Promise<Farmstand | null> {
@@ -25,8 +27,9 @@ async function getFarmstand(slug: string): Promise<Farmstand | null> {
 
   const { data, error } = await supabase
     .from("farmstands")
-    .select("id, name, city, state, description, cover_photo_url, slug")
+    .select("id, name, city, state, description, hero_image_url, image_url, slug, listing_status")
     .eq("slug", slug)
+    .eq("listing_status", "approved")
     .single();
 
   if (error || !data) {
@@ -55,10 +58,12 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     ? `${location ? location + " · " : ""}${farmstand.description}`
     : location || "A local farmstand near you.";
 
-  const images = farmstand.cover_photo_url
+  const heroImage = farmstand.hero_image_url || farmstand.image_url;
+
+  const images = heroImage
     ? [
         {
-          url: farmstand.cover_photo_url,
+          url: heroImage,
           width: 1200,
           height: 630,
           alt: farmstand.name,
@@ -79,7 +84,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       card: "summary_large_image",
       title: farmstand.name,
       description,
-      images: farmstand.cover_photo_url ? [farmstand.cover_photo_url] : [],
+      images: heroImage ? [heroImage] : [],
     },
   };
 }
@@ -93,6 +98,7 @@ export default async function FarmstandPage({ params }: Props) {
   }
 
   const location = [farmstand.city, farmstand.state].filter(Boolean).join(", ");
+  const heroImage = farmstand.hero_image_url || farmstand.image_url;
 
   return (
     <main
@@ -103,7 +109,7 @@ export default async function FarmstandPage({ params }: Props) {
       }}
     >
       {/* Hero image */}
-      {farmstand.cover_photo_url && (
+      {heroImage && (
         <div
           style={{
             width: "100%",
@@ -114,7 +120,7 @@ export default async function FarmstandPage({ params }: Props) {
           }}
         >
           <img
-            src={farmstand.cover_photo_url}
+            src={heroImage}
             alt={farmstand.name}
             style={{
               width: "100%",
