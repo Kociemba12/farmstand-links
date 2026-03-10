@@ -1,0 +1,66 @@
+{
+  "expo": {
+    "name": "HarvestMap",
+    "slug": "farmstand",
+    "scheme": "farmstand",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "extra": {
+      "MAPBOX_PUBLIC_TOKEN": "EXPO_PUBLIC_MAPBOX_TOKEN_PLACEHOLDER",
+      "eas": {
+        "projectId": "YOUR_EAS_PROJECT_ID"
+      }
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "online.farmstand.app",
+      "buildNumber": "47",
+      "infoPlist": {
+        "NSCameraUsageDescription": "HarvestMap uses the camera to capture photos inside the app before you publish them.",
+        "NSPhotoLibraryUsageDescription": "HarvestMap accesses your photo library to let you choose media that appears in the app.",
+        "NSLocationWhenInUseUsageDescription": "HarvestMap uses your location to display your position on in-app maps and surface nearby points of interest.",
+        "UIBackgroundModes": [
+          "remote-notification"
+        ],
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": [
+              "farmstand"
+            ]
+          }
+        ]
+      }
+    },
+    "android": {
+      "edgeToEdgeEnabled": true
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "associatedDomains": [
+              "applinks:links.farmstand.online"
+            ]
+          }
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./icon.png",
+          "color": "#2D5A3D",
+          "sounds": []
+        }
+      ],
+      "expo-secure-store"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "icon": "./icon.png"
+  }
+}
