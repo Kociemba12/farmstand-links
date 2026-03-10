@@ -15,9 +15,8 @@ function getMapboxToken(): string | undefined {
   const token = Constants.expoConfig?.extra?.MAPBOX_PUBLIC_TOKEN;
   if (token) return token;
 
-  // Fallback: hardcoded token (for dev only - remove in production)
-  // This ensures geocoding works even if expo-constants hasn't reloaded the config
-  return 'EXPO_PUBLIC_MAPBOX_TOKEN_PLACEHOLDER';
+  // Fallback to env var
+  return process.env.EXPO_PUBLIC_MAPBOX_TOKEN;
 }
 
 export interface GeocodeResult {

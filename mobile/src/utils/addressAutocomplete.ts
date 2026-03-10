@@ -9,8 +9,8 @@ import Constants from 'expo-constants';
 function getMapboxToken(): string | undefined {
   const token = Constants.expoConfig?.extra?.MAPBOX_PUBLIC_TOKEN;
   if (token) return token;
-  // Fallback for dev
-  return 'EXPO_PUBLIC_MAPBOX_TOKEN_PLACEHOLDER';
+  // Fallback to env var
+  return process.env.EXPO_PUBLIC_MAPBOX_TOKEN;
 }
 
 export interface AddressSuggestion {

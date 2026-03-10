@@ -8,7 +8,7 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "extra": {
-      "MAPBOX_PUBLIC_TOKEN": "EXPO_PUBLIC_MAPBOX_TOKEN_PLACEHOLDER",
+      "MAPBOX_PUBLIC_TOKEN": "",
       "eas": {
         "projectId": "YOUR_EAS_PROJECT_ID"
       }
