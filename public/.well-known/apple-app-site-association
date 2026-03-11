@@ -3,7 +3,7 @@
     "apps": [],
     "details": [
       {
-        "appID": "online.farmstand.app",
+        "appID": "6W553F55SF.online.farmstand.app",
         "paths": [
           "/farmstand/*",
           "/stands/*"
