@@ -4,11 +4,11 @@
     "details": [
       {
         "appID": "6W553F55SF.online.farmstand.app",
-        "paths": [
-          "/farmstand/*",
-          "/stands/*"
-        ]
+        "paths": ["/farmstand/*", "/stands/*"]
       }
     ]
+  },
+  "webcredentials": {
+    "apps": ["6W553F55SF.online.farmstand.app"]
   }
 }
