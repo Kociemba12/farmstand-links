@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Image from "next/image";
 import { notFound } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
 
@@ -108,7 +109,6 @@ export default async function FarmstandPage({ params }: Props) {
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
       }}
     >
-      {/* Hero image */}
       {heroImage && (
         <div
           style={{
@@ -119,17 +119,14 @@ export default async function FarmstandPage({ params }: Props) {
             background: "#d4c9b8",
           }}
         >
-          <img
+          <Image
             src={heroImage}
             alt={farmstand.name}
+            fill
             style={{
-              width: "100%",
-              height: "100%",
               objectFit: "cover",
-              display: "block",
             }}
           />
-          {/* Gradient overlay */}
           <div
             style={{
               position: "absolute",
@@ -141,7 +138,6 @@ export default async function FarmstandPage({ params }: Props) {
         </div>
       )}
 
-      {/* Content */}
       <div
         style={{
           maxWidth: 600,
@@ -149,7 +145,6 @@ export default async function FarmstandPage({ params }: Props) {
           padding: "2rem 1.5rem 3rem",
         }}
       >
-        {/* Name */}
         <h1
           style={{
             fontSize: "2rem",
@@ -163,7 +158,6 @@ export default async function FarmstandPage({ params }: Props) {
           {farmstand.name}
         </h1>
 
-        {/* Location */}
         {location && (
           <p
             style={{
@@ -194,7 +188,6 @@ export default async function FarmstandPage({ params }: Props) {
           </p>
         )}
 
-        {/* Description */}
         {farmstand.description && (
           <p
             style={{
@@ -208,7 +201,6 @@ export default async function FarmstandPage({ params }: Props) {
           </p>
         )}
 
-        {/* Divider */}
         <hr
           style={{
             border: "none",
@@ -217,7 +209,6 @@ export default async function FarmstandPage({ params }: Props) {
           }}
         />
 
-        {/* CTA */}
         <div style={{ textAlign: "center" }}>
           <p
             style={{
