@@ -9,5 +9,11 @@
         }
       ]
     }
+  ],
+  "routes": [
+    {
+      "src": "/.well-known/apple-app-site-association",
+      "dest": "/public/.well-known/apple-app-site-association"
+    }
   ]
 }
