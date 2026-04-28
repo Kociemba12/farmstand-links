@@ -1,0 +1,75 @@
+{
+  "expo": {
+    "name": "Farmstand: Fresh and Local",
+    "slug": "farmstand",
+    "owner": "contact.farmstand.online",
+    "scheme": "farmstand",
+    "version": "1.0.0",
+    "orientation": "default",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "extra": {
+      "MAPBOX_PUBLIC_TOKEN": "",
+      "eas": {
+        "projectId": "1129d511-ca7d-4c63-ad3a-eb2af65e06d1"
+      }
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "online.farmstand.app",
+      "appleTeamId": "6W553F55SF",
+      "buildNumber": "168",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Farmstand: Fresh and Local uses your location to display your position on in-app maps and surface nearby points of interest.",
+        "NSCameraUsageDescription": "Farmstand: Fresh and Local uses the camera to capture photos inside the app before you publish them.",
+        "NSPhotoLibraryUsageDescription": "Farmstand: Fresh and Local accesses your photo library to let you choose videos that appear in the app.",
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": [
+          "remote-notification"
+        ],
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": [
+              "farmstand"
+            ]
+          }
+        ]
+      }
+    },
+    "android": {
+      "edgeToEdgeEnabled": true
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "origin": "https://links.farmstand.online"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "associatedDomains": [
+              "applinks:links.farmstand.online"
+            ]
+          }
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./icon.png",
+          "color": "#2D5A3D",
+          "sounds": []
+        }
+      ],
+      "expo-secure-store",
+      "expo-video"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "icon": "./icon.png"
+  }
+}

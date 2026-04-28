@@ -1,0 +1,60 @@
+# ── Dependencies ──────────────────────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+
+# ── Private keys & certificates ───────────────────────────────────────────────
+*.pem
+*.key
+*.p8
+*.p12
+*.jks
+*.mobileprovision
+credentials.json
+google-services.json
+GoogleService-Info.plist
+
+# ── Build output ──────────────────────────────────────────────────────────────
+dist/
+out/
+build/
+.next/
+web-build/
+
+# ── Expo / React Native ────────────────────────────────────────────────────────
+.expo/
+expo.log
+ios/
+android/
+*.orig.*
+
+# ── TypeScript ────────────────────────────────────────────────────────────────
+*.tsbuildinfo
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+server.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# ── OS / editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Coverage ──────────────────────────────────────────────────────────────────
+coverage/
+*.lcov
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+.cache/
+.eslintcache
+
+# local secrets
+mobile/.env
+mobile/.env.production
+mobile/.expo/
