@@ -3,16 +3,39 @@ import Image from "next/image";
 import { notFound } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
 
+const FALLBACK_OG_IMAGE = "https://links.farmstand.online/farmstand-icon.png";
+
 interface Farmstand {
   id: string;
   name: string;
   city: string | null;
   state: string | null;
+  short_description: string | null;
   description: string | null;
+  photos: string[] | null;
+  main_photo_index: number | null;
+  hero_photo_url: string | null;
   hero_image_url: string | null;
   image_url: string | null;
   slug: string;
-  listing_status: string;
+  status: string | null;
+}
+
+/** Resolve the best available image URL for og:image / page hero. */
+function resolveDisplayImage(farmstand: Farmstand): string | null {
+  // 1. photos[main_photo_index] → photos[0]
+  if (farmstand.photos && farmstand.photos.length > 0) {
+    const idx = farmstand.main_photo_index ?? 0;
+    const photo = farmstand.photos[idx] ?? farmstand.photos[0];
+    if (photo && photo.startsWith("http")) return photo;
+  }
+  // 2. hero_photo_url
+  if (farmstand.hero_photo_url?.startsWith("http")) return farmstand.hero_photo_url;
+  // 3. hero_image_url
+  if (farmstand.hero_image_url?.startsWith("http")) return farmstand.hero_image_url;
+  // 4. image_url
+  if (farmstand.image_url?.startsWith("http")) return farmstand.image_url;
+  return null;
 }
 
 async function getFarmstand(slug: string): Promise<Farmstand | null> {
@@ -28,9 +51,11 @@ async function getFarmstand(slug: string): Promise<Farmstand | null> {
 
   const { data, error } = await supabase
     .from("farmstands")
-    .select("id, name, city, state, description, hero_image_url, image_url, slug, listing_status")
+    .select(
+      "id, name, city, state, short_description, description, photos, main_photo_index, hero_photo_url, hero_image_url, image_url, slug, status"
+    )
     .eq("slug", slug)
-    .eq("listing_status", "approved")
+    .neq("status", "deleted")
     .single();
 
   if (error || !data) {
@@ -55,22 +80,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
 
   const location = [farmstand.city, farmstand.state].filter(Boolean).join(", ");
-  const description = farmstand.description
-    ? `${location ? location + " · " : ""}${farmstand.description}`
+  const blurb = farmstand.short_description || farmstand.description || null;
+  const description = blurb
+    ? `${location ? location + " · " : ""}${blurb}`
     : location || "A local farmstand near you.";
 
-  const heroImage = farmstand.hero_image_url || farmstand.image_url;
-
-  const images = heroImage
-    ? [
-        {
-          url: heroImage,
-          width: 1200,
-          height: 630,
-          alt: farmstand.name,
-        },
-      ]
-    : [];
+  const displayImage = resolveDisplayImage(farmstand);
+  const ogImageUrl = displayImage ?? FALLBACK_OG_IMAGE;
 
   return {
     title: farmstand.name,
@@ -78,14 +94,21 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     openGraph: {
       title: farmstand.name,
       description,
-      images,
+      images: [
+        {
+          url: ogImageUrl,
+          width: 1200,
+          height: 630,
+          alt: farmstand.name,
+        },
+      ],
       type: "website",
     },
     twitter: {
       card: "summary_large_image",
       title: farmstand.name,
       description,
-      images: heroImage ? [heroImage] : [],
+      images: [ogImageUrl],
     },
   };
 }
@@ -99,7 +122,8 @@ export default async function FarmstandPage({ params }: Props) {
   }
 
   const location = [farmstand.city, farmstand.state].filter(Boolean).join(", ");
-  const heroImage = farmstand.hero_image_url || farmstand.image_url;
+  const heroImage = resolveDisplayImage(farmstand);
+  const displayDescription = farmstand.short_description || farmstand.description;
 
   return (
     <main
@@ -188,7 +212,7 @@ export default async function FarmstandPage({ params }: Props) {
           </p>
         )}
 
-        {farmstand.description && (
+        {displayDescription && (
           <p
             style={{
               fontSize: "1.0625rem",
@@ -197,7 +221,7 @@ export default async function FarmstandPage({ params }: Props) {
               marginBottom: "2rem",
             }}
           >
-            {farmstand.description}
+            {displayDescription}
           </p>
         )}
 
