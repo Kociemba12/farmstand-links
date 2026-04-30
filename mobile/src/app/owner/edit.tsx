@@ -877,12 +877,14 @@ export default function OwnerEditScreen() {
       'video/mp4'
     );
     if (uploadError || !uploadedUrl) throw new Error(uploadError?.message || 'Video upload failed');
+    if (__DEV__) console.log('[EditFarm] uploadAndSaveVideo — uploaded URL:', uploadedUrl);
 
     await updateFarmstand(farmstandId, {
       videoUrl: uploadedUrl,
       videoPath: storagePath,
       videoDurationSeconds: durationSeconds,
     });
+    if (__DEV__) console.log('[EditFarm] uploadAndSaveVideo — updateFarmstand completed for farmstandId:', farmstandId);
 
     setFarmstand((prev) => prev ? { ...prev, videoUrl: uploadedUrl, videoPath: storagePath, videoDurationSeconds: durationSeconds } : prev);
     setLocalVideo({ uri: uploadedUrl, uploading: false, failed: false, isLocalPreview: false, durationSeconds });
@@ -891,9 +893,11 @@ export default function OwnerEditScreen() {
 
   const pickVideo = async () => {
     if (!isPremium) {
+      if (__DEV__) console.log('[EditFarm] pickVideo blocked — not premium, premiumStatus:', farmstand?.premiumStatus);
       Alert.alert('Premium Required', 'Upgrade to Premium to add a video to your listing.');
       return;
     }
+    if (__DEV__) console.log('[EditFarm] pickVideo opened — farmstandId:', farmstandId, 'isPremium:', isPremium);
     trackEvent('video_manager_opened', { farmstand_id: farmstandId ?? null, farmstand_name: farmstand?.name ?? null });
 
     const existing = await ImagePicker.getMediaLibraryPermissionsAsync();
@@ -909,17 +913,23 @@ export default function OwnerEditScreen() {
       await new Promise((resolve) => setTimeout(resolve, 400));
     }
 
+    if (__DEV__) console.log('[EditFarm] pickVideo launching image library picker');
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Videos,
       allowsEditing: false,
       quality: 0.3,
     });
 
-    if (result.canceled || !result.assets[0]) return;
+    if (result.canceled || !result.assets[0]) {
+      if (__DEV__) console.log('[EditFarm] pickVideo — picker cancelled or no asset');
+      return;
+    }
     const asset = result.assets[0];
     const durationMs = asset.duration ?? null;
+    if (__DEV__) console.log('[EditFarm] pickVideo — asset uri:', asset.uri.slice(0, 80), '| durationMs:', durationMs, '| fileSize:', (asset as { fileSize?: number }).fileSize ?? 'n/a');
 
     if (durationMs !== null && durationMs > MAX_VIDEO_DURATION_SECONDS * 1000) {
+      if (__DEV__) console.log('[EditFarm] pickVideo — video too long:', durationMs, 'ms, max:', MAX_VIDEO_DURATION_SECONDS * 1000);
       Alert.alert('Video Too Long', `Video must be ${MAX_VIDEO_DURATION_SECONDS} seconds or less.`);
       return;
     }
@@ -928,11 +938,17 @@ export default function OwnerEditScreen() {
 
     // Optimistic preview
     setLocalVideo({ uri: asset.uri, uploading: true, failed: false, isLocalPreview: true, durationSeconds });
+    if (__DEV__) console.log('[EditFarm] pickVideo — upload started, durationSeconds:', durationSeconds);
 
-    uploadAndSaveVideo(asset.uri, durationSeconds).catch(() => {
-      setLocalVideo((prev) => prev ? { ...prev, uploading: false, failed: true } : prev);
-      showToast('Video upload failed. Please try again.', 'error');
-    });
+    uploadAndSaveVideo(asset.uri, durationSeconds)
+      .then(() => {
+        if (__DEV__) console.log('[EditFarm] pickVideo — upload finished, farmstand.videoUrl:', farmstand?.videoUrl);
+      })
+      .catch((err: unknown) => {
+        if (__DEV__) console.warn('[EditFarm] pickVideo — upload failed:', err instanceof Error ? err.message : String(err));
+        setLocalVideo((prev) => prev ? { ...prev, uploading: false, failed: true } : prev);
+        showToast('Video upload failed. Please try again.', 'error');
+      });
   };
 
   const removeVideo = async () => {
@@ -1335,6 +1351,8 @@ export default function OwnerEditScreen() {
   }
 
   const mainPhoto = formData.photos[formData.mainPhotoIndex] || formData.photos[0];
+
+  if (__DEV__) console.log('[EditFarm] render — farmstandId:', farmstandId, '| premiumStatus:', farmstand?.premiumStatus, '| isPremium:', isPremium, '| localVideo:', localVideo ? `uri=${localVideo.uri.slice(0, 60)} uploading=${localVideo.uploading}` : null, '| farmstand.videoUrl:', farmstand?.videoUrl ?? null);
 
   return (
     <View className="flex-1 bg-[#F5F3EE]">

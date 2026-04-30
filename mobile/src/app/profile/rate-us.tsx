@@ -18,7 +18,8 @@ import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import { useUserStore } from '@/lib/user-store';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
-import { getValidSession } from '@/lib/supabase';
+import { getValidSession, getSupabaseUrl } from '@/lib/supabase';
+import { submitFeedback, uploadFeedbackPhoto } from '@/lib/support-api';
 
 const FEEDBACK_CATEGORIES = [
   'General Feedback',
@@ -33,39 +34,6 @@ const MAX_PHOTOS = 5;
 
 type PhotoAttachment = { uri: string; mime: string };
 
-async function uploadImage(uri: string, mimeType: string, backendUrl: string, token: string): Promise<string> {
-  const filename = `feedback-${Date.now()}.${mimeType.split('/')[1] ?? 'jpg'}`;
-  const formData = new FormData();
-  formData.append('file', { uri, type: mimeType, name: filename } as unknown as Blob);
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
-  let response: Response;
-  try {
-    if (__DEV__) console.log('[Support] uploadImage start — uri tail:', uri.slice(-40), '| mime:', mimeType);
-    const t0 = Date.now();
-    response = await fetch(`${backendUrl}/api/upload`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      signal: controller.signal,
-      body: formData,
-    });
-    if (__DEV__) console.log('[Support] uploadImage done in', Date.now() - t0, 'ms — status:', response.status);
-  } finally {
-    clearTimeout(timeout);
-  }
-
-  const rct = response.headers.get('content-type') ?? '';
-  if (!rct.includes('application/json')) {
-    if (__DEV__) console.warn('[Support] upload non-JSON response (HTTP', response.status, '), content-type:', rct);
-    throw new Error(`Unexpected response from server (HTTP ${response.status})`);
-  }
-  const data = (await response.json()) as { success: boolean; data?: { url: string }; error?: string };
-  if (!response.ok || !data.success || !data.data?.url) {
-    throw new Error(data.error ?? 'Upload failed');
-  }
-  return data.data.url;
-}
 
 export default function RateUsScreen() {
   const router = useRouter();
@@ -172,24 +140,17 @@ export default function RateUsScreen() {
         return;
       }
 
-      const backendUrl = (process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL ?? '').replace(/\/$/, '');
-      console.log('[Support] backendUrl:', backendUrl);
-      if (!backendUrl) {
-        Alert.alert('Error', 'Support is temporarily unavailable. Please try again later.');
-        return;
-      }
-
-      // Upload all attached photos in parallel
+      // Upload all attached photos directly to Supabase Storage
       let screenshotUrls: string[] = [];
       if (photos.length > 0) {
         setIsUploading(true);
-        console.log('[Support] Starting upload of', photos.length, 'photo(s)');
+        if (__DEV__) console.log('[Support] Starting upload of', photos.length, 'photo(s)');
         try {
           const results = await Promise.allSettled(
             photos.map(async (p, i) => {
-              console.log(`[Support] Uploading photo ${i + 1}/${photos.length} — mime:${p.mime} uri:${p.uri.slice(-40)}`);
-              const url = await uploadImage(p.uri, p.mime, backendUrl, session.access_token);
-              console.log(`[Support] Photo ${i + 1} uploaded — url:${url}`);
+              if (__DEV__) console.log(`[Support] Uploading photo ${i + 1}/${photos.length} — mime:${p.mime} uri:${p.uri.slice(-40)}`);
+              const url = await uploadFeedbackPhoto(user!.id!, i, p.uri, p.mime);
+              if (__DEV__) console.log(`[Support] Photo ${i + 1} uploaded — url:${url}`);
               return url;
             })
           );
@@ -197,12 +158,12 @@ export default function RateUsScreen() {
           screenshotUrls = results
             .filter((r): r is PromiseFulfilledResult<string> => r.status === 'fulfilled')
             .map(r => r.value);
-          console.log('[Support] Upload results — success:', screenshotUrls.length, '| failed:', failed.length);
+          if (__DEV__) console.log('[Support] Upload results — success:', screenshotUrls.length, '| failed:', failed.length);
           if (failed.length > 0) {
-            failed.forEach((r, i) => console.warn(`[Support] Upload failure ${i + 1}:`, (r as PromiseRejectedResult).reason));
+            failed.forEach((r, i) => { if (__DEV__) console.warn(`[Support] Upload failure ${i + 1}:`, (r as PromiseRejectedResult).reason); });
           }
           if (failed.length > 0 && screenshotUrls.length === 0) {
-            console.warn('[Support] All photo uploads failed — showing dialog');
+            if (__DEV__) console.warn('[Support] All photo uploads failed — showing dialog');
             Alert.alert(
               'Photo Upload Failed',
               'We could not upload your screenshots. Would you like to submit without them?',
@@ -211,7 +172,7 @@ export default function RateUsScreen() {
                 { text: 'Submit Without Photos', onPress: async () => {
                   setIsUploading(false);
                   try {
-                    await doSubmit([], session.access_token, backendUrl, resolvedCategory, true);
+                    await doSubmit([], session.access_token, '', resolvedCategory, true);
                   } catch (submitErr) {
                     if (__DEV__) console.warn('[Support] Submit-without-photos failed:', submitErr instanceof Error ? submitErr.message : String(submitErr));
                     Alert.alert('Error', "Couldn't send right now. Check connection and try again.");
@@ -229,7 +190,7 @@ export default function RateUsScreen() {
 
       // hadPhotoFailures = true when some photos were attached but at least one failed to upload
       const hadPhotoFailures = photos.length > 0 && screenshotUrls.length < photos.length;
-      await doSubmit(screenshotUrls, session.access_token, backendUrl, resolvedCategory, hadPhotoFailures);
+      await doSubmit(screenshotUrls, session.access_token, '', resolvedCategory, hadPhotoFailures);
     } catch (error) {
       if (__DEV__) console.warn('[Feedback] Submit exception:', error instanceof Error ? error.message : String(error));
       Alert.alert('Error', "Couldn't send right now. Check connection and try again.");
@@ -238,81 +199,72 @@ export default function RateUsScreen() {
     }
   };
 
-  const doSubmit = async (screenshotUrls: string[], token: string, backendUrl: string, resolvedCategory: string, hadPhotoFailures = false) => {
-    if (__DEV__) console.log('[Support] doSubmit start — userId:', user?.id, '| category:', resolvedCategory, '| screenshots:', screenshotUrls.length);
-    const t0 = Date.now();
+  // _token and _backendUrl kept in signature so call sites need no change
+  const doSubmit = async (screenshotUrls: string[], _token: string, _backendUrl: string, resolvedCategory: string, hadPhotoFailures = false) => {
+    const result = await submitFeedback({
+      userId:        user!.id!,
+      userEmail:     user!.email,
+      userName:      user!.name ?? null,
+      rating:        rating || null,
+      category:      resolvedCategory,
+      message:       message.trim(),
+      sourceScreen:  'support',
+      screenshotUrls,
+    });
 
-    const submitUrl = `${backendUrl}/api/feedback`;
-    if (__DEV__) console.log('[Support] POST', submitUrl);
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000);
-    let resp: Response;
-    try {
-      resp = await fetch(submitUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        signal: controller.signal,
-        body: JSON.stringify({
-          user_email: user!.email,
-          user_name: user!.name ?? null,
-          rating: rating || null,
-          category: resolvedCategory,
-          message: message.trim(),
-          source_screen: 'support',
-          screenshot_urls: screenshotUrls.length > 0 ? screenshotUrls : null,
-        }),
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
-
-    if (__DEV__) console.log('[Support] POST completed in', Date.now() - t0, 'ms — status:', resp.status);
-
-    const rct2 = resp.headers.get('content-type') ?? '';
-    if (!rct2.includes('application/json')) {
-      const bodyText = await resp.text().catch(() => '(unreadable)');
-      if (__DEV__) console.warn('[Support] Non-JSON response — HTTP', resp.status, '| content-type:', rct2, '| body:', bodyText);
-      throw new Error(`Server returned HTTP ${resp.status}. Check backend logs.`);
-    }
-    const json = (await resp.json()) as { success: boolean; id?: string; error?: string };
-    if (__DEV__) {
-      console.log('[Support] Response body:', JSON.stringify(json));
-      if (json.id) console.log('[Support] Created ticket id:', json.id);
-    }
-
-    if (json.success) {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-      const successMessage = hadPhotoFailures
-        ? 'Message saved, but photo upload failed. You can describe the issue in text — no photo needed.'
-        : 'Your message was sent to the Farmstand team.';
-
-      Alert.alert(
-        'Message Sent!',
-        successMessage,
-        [{ text: 'OK', onPress: () => {
-          setRating(0);
-          setCategory('');
-          setMessage('');
-          setPhotos([]);
-          router.back();
-        }}]
-      );
-    } else if (json.error === 'feedback_table_missing') {
-      if (__DEV__) console.warn('[Support] feedback table missing — real DB error');
-      Alert.alert(
-        'Submission Failed',
-        'The feedback system is not set up yet. Please contact support directly at contact@farmstand.online.',
-        [{ text: 'OK' }]
-      );
-    } else {
-      if (__DEV__) console.warn('[Support] Submit failed:', json.error);
+    if (!result.success) {
+      if (__DEV__) console.warn('[Support] submitFeedback failed:', result.error);
       Alert.alert('Error', "Couldn't send right now. Check connection and try again.");
+      setIsSubmitting(false);
+      return;
     }
+
+    if (__DEV__) console.log('[Support] Ticket created — id:', result.id);
+
+    // Best-effort admin email — fire-and-forget, does not block submission
+    void fetch(`${getSupabaseUrl()}/functions/v1/hyper-worker`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? ''}`,
+      },
+      body: JSON.stringify({
+        type: 'support_ticket_submitted',
+        data: {
+          ticket_id:       result.id ?? null,
+          subject:         resolvedCategory,
+          source_screen:   'support',
+          message:         message.trim(),
+          user_id:         user!.id!,
+          user_email:      user!.email,
+          attachment_info: screenshotUrls.length > 0 ? `${screenshotUrls.length} photo(s) attached` : null,
+          submitted_at:    new Date().toISOString(),
+        },
+      }),
+    }).then(async (r) => {
+      const body = await r.text().catch(() => '(unreadable)');
+      if (__DEV__) console.log('[Support] hyper-worker response — status:', r.status, '| body:', body);
+    }).catch((err: unknown) => {
+      if (__DEV__) console.warn('[Support] hyper-worker network error:', err);
+    });
+
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+    const successMessage = hadPhotoFailures
+      ? 'Message saved, but photo upload failed. You can describe the issue in text — no photo needed.'
+      : 'Your message was sent to the Farmstand team.';
+
+    Alert.alert(
+      'Message Sent!',
+      successMessage,
+      [{ text: 'OK', onPress: () => {
+        setRating(0);
+        setCategory('');
+        setMessage('');
+        setPhotos([]);
+        router.back();
+      }}]
+    );
 
     setIsSubmitting(false);
   };

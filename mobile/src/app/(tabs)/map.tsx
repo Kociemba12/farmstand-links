@@ -340,6 +340,12 @@ export default function MapScreen() {
   // same nonce is skipped, preventing the chip from re-applying after the user dismissed it.
   const userClearedNonceRef = useRef<string | null>(null);
 
+  // True whenever the user has performed a local action (typed search, clear) that supersedes
+  // the current route params. Prevents searchFilteredFarms from using stale params.matchedFarmstandIds
+  // / matchedFarmstandId as PRIORITY 1/2 overrides after the user has moved on.
+  // Reset to false only when useFocusEffect successfully applies fresh Explore params.
+  const paramsStaleRef = useRef(false);
+
   // Track which "View on Map" farmstand we have already focused (to avoid re-triggering on focus)
   const processedViewOnMapIdRef = useRef<string | null>(null);
 
@@ -474,6 +480,24 @@ export default function MapScreen() {
   const loadPromotionsData = usePromotionsStore((s) => s.loadPromotionsData);
   const getBoostedForMap = usePromotionsStore((s) => s.getBoostedForMap);
 
+  // Central reset helper — call before applying any new search source.
+  // Resets ALL filter/search state and marks route params as stale so that
+  // stale matchedFarmstandIds / matchedFarmstandId never override the new action.
+  const clearAllMapFilters = useCallback((reason: string) => {
+    if (__DEV__) console.log('[Map] clearAllMapFilters —', reason);
+    paramsStaleRef.current = true;
+    userClearedNonceRef.current = params.searchNonce ?? '0';
+    // Intentionally NOT resetting processedParamsRef.current — the full paramsKey guard
+    // (Guard 2 in useFocusEffect) must stay intact. Resetting it to null would allow
+    // old Explore params to slip through if userClearedNonceRef is later nulled.
+    processedSearchRef.current = null;
+    initialSearchHandledRef.current = false;
+    setSearchDraftText('');
+    setActiveSearchQuery('');
+    setMapFilter(null);
+    clearSearch();
+  }, [clearSearch, params.searchNonce]);
+
   // Load admin data on mount and when returning to this screen
   useFocusEffect(
     useCallback(() => {
@@ -488,10 +512,14 @@ export default function MapScreen() {
         // Include searchNonce so the same category re-triggers after a user clears it
         const paramsKey = `${params.mapFilterType}-${params.mapFilterProductTag}-${params.searchNonce ?? '0'}`;
         const nonce = params.searchNonce ?? '0';
-        // Guard 1: don't re-apply the same params twice (processedParamsRef)
-        // Guard 2: don't re-apply params whose nonce the user explicitly cleared (userClearedNonceRef)
-        if (processedParamsRef.current !== paramsKey && nonce !== userClearedNonceRef.current) {
+        // All four conditions must pass to apply incoming Explore params:
+        // 1. params.searchNonce must exist — navigation without a nonce is never applied
+        // 2. paramsKey must differ from the last processed key — no double-apply
+        // 3. nonce must not match the locally cleared/staled nonce — user dismissed this chip
+        // 4. paramsStaleRef must be false — user hasn't searched/cleared since last apply
+        if (params.searchNonce && processedParamsRef.current !== paramsKey && nonce !== userClearedNonceRef.current && !paramsStaleRef.current) {
           processedParamsRef.current = paramsKey;
+          paramsStaleRef.current = false;
           setMapFilter({ type: params.mapFilterType, productTag: params.mapFilterProductTag });
           // Category chip is the sole visual indicator — always clear the search bar text
           setActiveSearchQuery('');
@@ -510,6 +538,7 @@ export default function MapScreen() {
       const textSearchKey = params.search ? `${params.search}-${params.searchNonce ?? '0'}` : null;
       if (params.search && !params.mapFilterType && textSearchKey !== processedSearchRef.current) {
         processedSearchRef.current = textSearchKey;
+        paramsStaleRef.current = false;
         // Apply new search text immediately
         setSearchDraftText(params.search);
         setActiveSearchQuery(params.search);
@@ -768,8 +797,10 @@ export default function MapScreen() {
     // If no active search query, return all farms (using baseFarmstands for instant rendering)
     if (!activeSearchQuery.trim()) return baseFarmstands;
 
-    // PRIORITY 1: If matchedFarmstandIds param is present (name search from Explore), use those directly
-    if (params.matchedFarmstandIds && params.searchType === 'name') {
+    // PRIORITY 1: If matchedFarmstandIds param is present (name search from Explore), use those directly.
+    // Guard: skip when paramsStaleRef is true — means the user has done a new local search/clear
+    // and the route params are from a previous Explore navigation that no longer applies.
+    if (params.matchedFarmstandIds && params.searchType === 'name' && !paramsStaleRef.current) {
       const matchedIds = params.matchedFarmstandIds.split(',').filter(Boolean);
       if (matchedIds.length > 0) {
         const matchedIdSet = new Set(matchedIds);
@@ -781,8 +812,9 @@ export default function MapScreen() {
       }
     }
 
-    // PRIORITY 2: If single matchedFarmstandId param (legacy name search), use that
-    if (params.matchedFarmstandId && params.searchType === 'name') {
+    // PRIORITY 2: If single matchedFarmstandId param (legacy name search), use that.
+    // Same stale-params guard as PRIORITY 1.
+    if (params.matchedFarmstandId && params.searchType === 'name' && !paramsStaleRef.current) {
       const matched = baseFarmstands.find((f) => f.id === params.matchedFarmstandId);
       if (matched) {
         return [matched];
@@ -1236,9 +1268,9 @@ export default function MapScreen() {
 
   // Handle initial search navigation from Explore (runs once when search params are present)
   useEffect(() => {
-    // Skip if already handled or no search params
+    // Skip if already handled, no search params, or user has superseded these params locally
     if (initialSearchHandledRef.current) return;
-    if (!params.search || baseFarmstands.length === 0) return;
+    if (!params.search || baseFarmstands.length === 0 || paramsStaleRef.current) return;
 
     initialSearchHandledRef.current = true;
     const searchType = params.searchType;
@@ -1923,12 +1955,18 @@ export default function MapScreen() {
             value={searchDraftText}
             onChangeText={(text) => {
               setSearchDraftText(text);
-              // Typed text takes priority over any active chip — clear it on first keystroke
-              if (text.trim().length > 0 && mapFilter) {
+              if (text.trim().length > 0) {
+                // Any keystroke permanently stales the current Explore nonce — both guards
+                // (paramsStaleRef + userClearedNonceRef) are set unconditionally so that
+                // useFocusEffect cannot reapply the old chip regardless of mapFilter state.
+                paramsStaleRef.current = true;
                 userClearedNonceRef.current = params.searchNonce ?? '0';
-                setMapFilter(null);
-                if (__DEV__) {
-                  console.log('[Map] typing cleared chip — filter source: typed-search | consuming nonce:', params.searchNonce ?? '0', '| draft:', text.trim().slice(0, 30));
+                // Typed text also takes priority over any active category chip
+                if (mapFilter) {
+                  setMapFilter(null);
+                  if (__DEV__) {
+                    console.log('[Map] typing cleared chip — filter source: typed-search | consuming nonce:', params.searchNonce ?? '0', '| draft:', text.trim().slice(0, 30));
+                  }
                 }
               }
             }}
@@ -1941,17 +1979,10 @@ export default function MapScreen() {
               const trimmed = searchDraftText.trim();
               if (trimmed) trackEvent('map_search_submitted', { query: trimmed, query_length: trimmed.length });
 
-              // Full state reset — new search always fully replaces old search
-              clearSearch();
-              // Consume the incoming Explore nonce so useFocusEffect never re-applies the
-              // stale chip after this typed search (guards against re-focus rehydration).
-              if (params.mapFilterType && params.mapFilterProductTag) {
-                userClearedNonceRef.current = params.searchNonce ?? '0';
-              }
-              // Keep processedParamsRef at its current value — resetting to null would let the
-              // stale chip slip through on re-focus if userClearedNonceRef check somehow misses.
-              processedSearchRef.current = null;
-              initialSearchHandledRef.current = false;
+              // Full state reset — new search always fully replaces old search.
+              // clearAllMapFilters sets paramsStaleRef, userClearedNonceRef, processedParamsRef,
+              // processedSearchRef, initialSearchHandledRef, and clears all search/filter state.
+              clearAllMapFilters('typed-search-submit');
               pinnedFarmstandRef.current = null;
               setPinnedFarmstand(null);
               setSelectedFarmId(null);
@@ -1966,9 +1997,10 @@ export default function MapScreen() {
               // Use same category resolution as Explore and chip taps
               const categoryKey = detectCategoryFromQuery(trimmed);
               if (categoryKey) {
-                // Category/product search — chip is the sole visual indicator
-                // This is a NEW chip the user typed — reset cleared nonce guard so it can apply
-                userClearedNonceRef.current = null;
+                // Category/product search — chip is the sole visual indicator.
+                // paramsStaleRef (set by clearAllMapFilters above) keeps old Explore params from
+                // resurging via useFocusEffect. Never reset userClearedNonceRef here — doing so
+                // would re-open the window for a previously cleared Explore chip to reapply.
                 setMapFilter({ type: 'category', productTag: categoryKey });
                 setActiveSearchQuery('');
                 setSearchDraftText('');  // search bar stays empty; chip shows the active filter
@@ -1997,19 +2029,8 @@ export default function MapScreen() {
             <Pressable
               onPress={() => {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                // Clear both draft text and active query
-                setSearchDraftText('');
-                setActiveSearchQuery('');
-                clearSearch();
-                // Clear any mapFilter as well
-                setMapFilter(null);
-                // Reset processed params so stale params don't rehydrate
-                processedParamsRef.current = null;
-                processedSearchRef.current = null;
-                initialSearchHandledRef.current = false;
-                // Collapse bottom sheet
+                clearAllMapFilters('clear-button');
                 snapToState('collapsed');
-                // Clear selected farm
                 pinnedFarmstandRef.current = null;
                 setPinnedFarmstand(null);
                 setSelectedFarmId(null);
@@ -2046,16 +2067,10 @@ export default function MapScreen() {
               <Pressable
                 onPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  // Consume the nonce so useFocusEffect never re-applies this Explore chip
-                  userClearedNonceRef.current = params.searchNonce ?? '0';
                   if (__DEV__) {
                     console.log('[Map] chip cleared — tag:', mapFilter?.productTag, '| consuming nonce:', params.searchNonce ?? '0');
                   }
-                  setMapFilter(null);
-                  setSearchDraftText('');
-                  setActiveSearchQuery('');
-                  clearSearch();
-                  // Clear any selected pin when clearing the filter
+                  clearAllMapFilters('chip-x-pressed');
                   pinnedFarmstandRef.current = null;
                   setPinnedFarmstand(null);
                   setSelectedFarmId(null);
@@ -2216,12 +2231,7 @@ export default function MapScreen() {
                   <Pressable
                     onPress={() => {
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setSearchDraftText('');
-                      setActiveSearchQuery('');
-                      clearSearch();
-                      setMapFilter(null);
-                      processedParamsRef.current = null;
-                      initialSearchHandledRef.current = false;
+                      clearAllMapFilters('empty-state-clear');
                       snapToState('collapsed');
                       pinnedFarmstandRef.current = null;
                       setPinnedFarmstand(null);

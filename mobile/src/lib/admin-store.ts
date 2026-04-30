@@ -862,7 +862,16 @@ export const useAdminStore = create<AdminState>((set, get) => ({
 
           if (claimError) {
             console.log('[AdminStore] Could not fetch claim requests from Supabase (may need admin access):', claimError.message);
-          } else if (claimData && claimData.length > 0) {
+          } else {
+            const totalCount = claimData?.length ?? 0;
+            const pendingCount = claimData?.filter(r => r.status === 'pending').length ?? 0;
+            console.log(`[AdminStore] loadAdminData claim_requests — total rows: ${totalCount} | pending: ${pendingCount}`);
+            if (claimData && totalCount > 0) {
+              const statusList = claimData.slice(0, 10).map(r => r.status).join(', ');
+              console.log('[AdminStore] loadAdminData claim_requests statuses (first 10):', statusList);
+            }
+          }
+          if (claimData && claimData.length > 0) {
             console.log(`[AdminStore] Fetched ${claimData.length} claim requests from Supabase`);
             claimRequestsFromSupabase = claimData.map((row): ClaimRequest => ({
               id: row.id as string,
@@ -1055,267 +1064,171 @@ export const useAdminStore = create<AdminState>((set, get) => ({
   updateFarmstand: async (id: string, updates: Partial<Farmstand>) => {
     const now = new Date().toISOString();
 
-    console.log('[AdminStore] updateFarmstand called with updates:', JSON.stringify(updates));
-
-    // If Supabase is configured, update there first
-    if (isSupabaseConfigured()) {
-      console.log('[AdminStore] Updating farmstand in Supabase:', id);
-
-      // Map only fields that exist in the Supabase schema (camelCase -> snake_case)
-      // IMPORTANT: This is an ALLOWLIST - only fields listed here will be sent to Supabase.
-      // Do NOT add ownership/verification fields here:
-      //   - claimed_by, claimed_at, submitted_by (ownership - causes RLS WITH CHECK to fail)
-      //   - verified, verified_at, verification_status (admin-only)
-      //   - status, approval_status (admin-only - handled separately below for admin use only)
-      // NOTE: Only include columns that ACTUALLY EXIST in Supabase farmstands table
-      // Fields NOT in Supabase (app-only): seasonalDates, honorSystem, selfServe,
-      //   directionsNotes, parkingNotes, todaysNote, isActive,
-      //   mainPhotoIndex, shortDescription, seasonalNotes
-      // NOTE: showOnMap IS a real Supabase column (show_on_map) — it controls public visibility
-      const validFieldMappings: Record<string, string> = {
-        name: 'name',
-        description: 'description',
-        operationalStatus: 'operational_status',
-        operatingStatus: 'operating_status',
-        addressLine1: 'street_address',
-        addressLine2: 'address_line2',
-        city: 'city',
-        state: 'state',
-        zip: 'zip',
-        latitude: 'latitude',
-        longitude: 'longitude',
-        email: 'email',
-        phone: 'phone',
-        offerings: 'offerings',
-        otherProducts: 'other_products',
-        paymentOptions: 'payment_options',
-        categories: 'categories',
-        // Hours fields - stored in Supabase
-        hours: 'hours',
-        isOpen24_7: 'is_open_24_7',
-        // Photo URL fields - ALL must be in allowlist for photo uploads to persist
-        // CRITICAL: These fields store the Supabase Storage public URL (https://...)
-        // NEVER allow local file:// URIs to be stored here
-        heroPhotoUrl: 'hero_photo_url',
-        aiPhotoUrl: 'ai_photo_url',
-        heroImageUrl: 'hero_image_url',
-        aiImageUrl: 'ai_image_url',
-        photos: 'photos',
-        // Legacy photo columns still used by Map/Explore card display fallback
-        photoUrl: 'photo_url',
-        imageUrl: 'image_url',
-        // Visibility — controls whether the farmstand appears on the public map/search
-        showOnMap: 'show_on_map',
-        // Video fields (premium feature)
-        videoUrl: 'video_url',
-        videoPath: 'video_path',
-        videoDurationSeconds: 'video_duration_seconds',
-      };
-
-      const snakeCaseUpdates: Record<string, unknown> = {
-        updated_at: now,
-      };
-
-      for (const [camelKey, snakeKey] of Object.entries(validFieldMappings)) {
-        if (camelKey in updates) {
-          snakeCaseUpdates[snakeKey] = (updates as Record<string, unknown>)[camelKey];
-        }
-      }
-
-      // Handle status separately - Supabase only accepts 'pending' and 'active'
-      // Map app status values to Supabase-compatible values
-      if ('status' in updates) {
-        const appStatus = updates.status;
-        // Only send status if it's a valid Supabase value
-        if (appStatus === 'pending' || appStatus === 'active') {
-          snakeCaseUpdates['status'] = appStatus;
-        }
-        // 'draft', 'hidden', 'denied' are not valid Supabase status values - skip them
-      }
-
-      // Handle cross_street1 and cross_street2 separately
-      if ('crossStreet1' in updates) {
-        snakeCaseUpdates['cross_street1'] = updates.crossStreet1 || null;
-      }
-      if ('crossStreet2' in updates) {
-        snakeCaseUpdates['cross_street2'] = updates.crossStreet2 || null;
-      }
-
-      // If any address fields were updated, recompute full_address
-      const addressFieldsUpdated = ['addressLine1', 'city', 'state', 'zip'].some(
-        (key) => key in updates
+    if (!isSupabaseConfigured()) {
+      // No Supabase — only update local state (non-production fallback)
+      const farmstands = get().allFarmstands.map(f =>
+        f.id === id ? { ...f, ...updates, updatedAt: now } : f
       );
-      if (addressFieldsUpdated) {
-        // Get current farmstand to merge with updates
-        const currentFarmstand = get().allFarmstands.find((f) => f.id === id);
-        const mergedAddress = {
-          addressLine1: updates.addressLine1 ?? currentFarmstand?.addressLine1,
-          city: updates.city ?? currentFarmstand?.city,
-          state: updates.state ?? currentFarmstand?.state,
-          zip: updates.zip ?? currentFarmstand?.zip,
-        };
-        const fullAddress = [
-          mergedAddress.addressLine1,
-          mergedAddress.city,
-          mergedAddress.state,
-          mergedAddress.zip,
-        ]
-          .filter(Boolean)
-          .join(', ');
-        snakeCaseUpdates['full_address'] = fullAddress || null;
-      }
+      set({ allFarmstands: farmstands });
+      return;
+    }
 
-      // If offerings or categories changed, clear the stored ai_image_url so stale
-      // AI-generated images never resurface. The display layer will derive a fresh
-      // product-matched image on the next render without needing the stored URL.
-      const productDataChanged = 'offerings' in updates || 'categories' in updates;
-      if (productDataChanged) {
-        snakeCaseUpdates['ai_image_url'] = null;
-        console.log('[AdminStore] offerings/categories changed — clearing ai_image_url to prevent stale image');
-      }
+    // ── Build snake_case update payload ───────────────────────────────────────
+    // ALLOWLIST: only content fields the edit screen touches.
+    // Never include ownership/claim/verification columns.
+    const validFieldMappings: Record<string, string> = {
+      name:               'name',
+      description:        'description',
+      operationalStatus:  'operational_status',
+      operatingStatus:    'operating_status',
+      addressLine1:       'street_address',
+      addressLine2:       'address_line2',
+      city:               'city',
+      state:              'state',
+      zip:                'zip',
+      latitude:           'latitude',
+      longitude:          'longitude',
+      email:              'email',
+      phone:              'phone',
+      offerings:          'offerings',
+      otherProducts:      'other_products',
+      paymentOptions:     'payment_options',
+      categories:         'categories',
+      hours:              'hours',
+      isOpen24_7:         'is_open_24_7',
+      heroPhotoUrl:       'hero_photo_url',
+      aiPhotoUrl:         'ai_photo_url',
+      heroImageUrl:       'hero_image_url',
+      aiImageUrl:         'ai_image_url',
+      photos:             'photos',
+      photoUrl:           'photo_url',
+      imageUrl:           'image_url',
+      showOnMap:          'show_on_map',
+      videoUrl:           'video_url',
+      videoPath:          'video_path',
+      videoDurationSeconds: 'video_duration_seconds',
+    };
 
-      // DEBUG: Log what we're sending to Supabase
-      console.log('[AdminStore] Sending to Supabase:', JSON.stringify(snakeCaseUpdates));
+    const snakeCaseUpdates: Record<string, unknown> = {};
 
-      const { data: updateResult, error: supabaseError } = await supabase
-        .from<Record<string, unknown>>('farmstands')
-        .update(snakeCaseUpdates)
-        .eq('id', id)
-        .select('id')
-        .execute();
-
-      if (supabaseError && (supabaseError as any).code === '42501') {
-        // RLS blocking direct update — route through backend which verifies ownership server-side
-        console.log('[AdminStore] RLS blocked direct update (42501), falling back to backend route');
-        const backendUrl = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
-        let session = await getValidSession();
-        if (!session?.access_token) {
-          throw new Error('Session expired. Please sign in again.');
-        }
-        let backendResp = await fetch(`${backendUrl}/api/update-farmstand`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-          body: JSON.stringify({ farmstand_id: id, updates: snakeCaseUpdates }),
-        });
-        // On 401 the cached token may be stale — force a reload and retry once
-        if (backendResp.status === 401) {
-          console.log('[AdminStore] Backend returned 401, forcing session reload and retrying...');
-          session = await forceReloadSession();
-          if (!session?.access_token) throw new Error('Session expired. Please sign in again.');
-          backendResp = await fetch(`${backendUrl}/api/update-farmstand`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-            body: JSON.stringify({ farmstand_id: id, updates: snakeCaseUpdates }),
-          });
-        }
-        const bct1 = backendResp.headers.get('content-type') ?? '';
-        if (!bct1.includes('application/json')) {
-          console.log('[AdminStore] update-farmstand non-JSON response (HTTP', backendResp.status, '), content-type:', bct1);
-          return;
-        }
-        const backendData = await backendResp.json() as { success: boolean; error?: string };
-        if (!backendResp.ok || !backendData.success) {
-          console.log('[AdminStore] Backend update skipped:', backendResp.status, backendData.error);
-          return;
-        }
-        console.log('[AdminStore] Backend farmstand update success');
-      } else if (supabaseError) {
-        console.log('[AdminStore] Supabase update error:', supabaseError.message, 'code:', (supabaseError as any).code);
-        // Route all Supabase errors through backend (service role bypasses RLS)
-        console.log('[AdminStore] Supabase error, falling back to backend route');
-        const backendUrl2 = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
-        let session2 = await getValidSession();
-        if (!session2?.access_token) {
-          throw new Error('Session expired. Please sign in again.');
-        }
-        let backendResp2 = await fetch(`${backendUrl2}/api/update-farmstand`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session2.access_token}` },
-          body: JSON.stringify({ farmstand_id: id, updates: snakeCaseUpdates }),
-        });
-        if (backendResp2.status === 401) {
-          console.log('[AdminStore] Backend returned 401 (error fallback), forcing session reload and retrying...');
-          session2 = await forceReloadSession();
-          if (!session2?.access_token) throw new Error('Session expired. Please sign in again.');
-          backendResp2 = await fetch(`${backendUrl2}/api/update-farmstand`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session2.access_token}` },
-            body: JSON.stringify({ farmstand_id: id, updates: snakeCaseUpdates }),
-          });
-        }
-        const bct2 = backendResp2.headers.get('content-type') ?? '';
-        if (!bct2.includes('application/json')) {
-          console.log('[AdminStore] update-farmstand (error fallback) non-JSON response (HTTP', backendResp2.status, '), content-type:', bct2);
-          return;
-        }
-        const backendData2 = await backendResp2.json() as { success: boolean; error?: string };
-        if (!backendResp2.ok || !backendData2.success) {
-          console.log('[AdminStore] Backend update skipped (error fallback):', backendResp2.status, backendData2.error);
-          return;
-        }
-        console.log('[AdminStore] Backend farmstand update success (error fallback)');
-      } else if (!updateResult || updateResult.length === 0) {
-        console.warn('[AdminStore] Supabase update returned 0 rows - routing through backend');
-        const backendUrl3 = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
-        let session3 = await getValidSession();
-        if (!session3?.access_token) {
-          throw new Error('Session expired. Please sign in again.');
-        }
-        let backendResp3 = await fetch(`${backendUrl3}/api/update-farmstand`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session3.access_token}` },
-          body: JSON.stringify({ farmstand_id: id, updates: snakeCaseUpdates }),
-        });
-        if (backendResp3.status === 401) {
-          console.log('[AdminStore] Backend returned 401 (0-rows fallback), forcing session reload and retrying...');
-          session3 = await forceReloadSession();
-          if (!session3?.access_token) throw new Error('Session expired. Please sign in again.');
-          backendResp3 = await fetch(`${backendUrl3}/api/update-farmstand`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session3.access_token}` },
-            body: JSON.stringify({ farmstand_id: id, updates: snakeCaseUpdates }),
-          });
-        }
-        const bct3 = backendResp3.headers.get('content-type') ?? '';
-        if (!bct3.includes('application/json')) {
-          console.log('[AdminStore] update-farmstand (0-rows fallback) non-JSON response (HTTP', backendResp3.status, '), content-type:', bct3);
-          return;
-        }
-        const backendData3 = await backendResp3.json() as { success: boolean; error?: string };
-        if (!backendResp3.ok || !backendData3.success) {
-          console.log('[AdminStore] Backend update skipped (0-rows fallback):', backendResp3.status, backendData3.error);
-          return;
-        }
-        console.log('[AdminStore] Backend farmstand update success (0-rows fallback)');
-      } else {
-        console.log('[AdminStore] Supabase update success, rows affected:', updateResult.length);
+    for (const [camelKey, snakeKey] of Object.entries(validFieldMappings)) {
+      if (camelKey in updates) {
+        snakeCaseUpdates[snakeKey] = (updates as Record<string, unknown>)[camelKey];
       }
     }
 
-    // Update local state
-    const farmstands = get().allFarmstands.map(f =>
-      f.id === id ? { ...f, ...updates, updatedAt: now } : f
+    // status: only 'pending' and 'active' are valid Supabase values
+    if ('status' in updates) {
+      const appStatus = updates.status;
+      if (appStatus === 'pending' || appStatus === 'active') {
+        snakeCaseUpdates['status'] = appStatus;
+      }
+    }
+
+    // cross streets (not in main validFieldMappings)
+    if ('crossStreet1' in updates) snakeCaseUpdates['cross_street1'] = updates.crossStreet1 || null;
+    if ('crossStreet2' in updates) snakeCaseUpdates['cross_street2'] = updates.crossStreet2 || null;
+
+    // Recompute full_address when any address part changes
+    if (['addressLine1', 'city', 'state', 'zip'].some((k) => k in updates)) {
+      const cur = get().allFarmstands.find((f) => f.id === id);
+      const parts = [
+        updates.addressLine1 ?? cur?.addressLine1,
+        updates.city         ?? cur?.city,
+        updates.state        ?? cur?.state,
+        updates.zip          ?? cur?.zip,
+      ].filter(Boolean);
+      snakeCaseUpdates['full_address'] = parts.length ? parts.join(', ') : null;
+    }
+
+    // Clear stale AI image when products change
+    if ('offerings' in updates || 'categories' in updates) {
+      snakeCaseUpdates['ai_image_url'] = null;
+      if (__DEV__) console.log('[AdminStore] offerings/categories changed — clearing ai_image_url');
+    }
+
+    if (__DEV__) console.log('[AdminStore] updateFarmstand — farmstandId:', id, '| RPC payload:', JSON.stringify(snakeCaseUpdates));
+
+    // If nothing mapped (e.g. analytics-only fields like clicks30d/popularityScore
+    // that aren't in the DB allowlist), skip the RPC entirely and just update
+    // local state. This prevents spurious permission errors for public viewers.
+    if (Object.keys(snakeCaseUpdates).length === 0) {
+      if (__DEV__) console.log('[AdminStore] updateFarmstand — no DB-mapped fields in payload, updating local state only');
+      set({
+        allFarmstands: get().allFarmstands.map(f =>
+          f.id === id ? { ...f, ...updates, updatedAt: now } : f
+        ),
+      });
+      return;
+    }
+
+    // ── Try owner path first (works for any authenticated owner/claimer) ──────
+    // Falls back to admin path if the caller isn't the owner (i.e. admin editing
+    // a farmstand they don't own).
+    const { data: ownerResult, error: ownerRpcError } = await supabase.rpc<{ success: boolean; error?: string }>(
+      'owner_update_farmstand',
+      { p_farmstand_id: id, p_updates: snakeCaseUpdates },
     );
-    set({ allFarmstands: farmstands });
+
+    const ownerOk = !ownerRpcError && (ownerResult as { success: boolean } | null)?.success === true;
+
+    if (__DEV__) console.log('[AdminStore] owner_update_farmstand result:', JSON.stringify(ownerResult), '| rpcError:', ownerRpcError?.message ?? null, '| ok:', ownerOk);
+
+    if (ownerOk) {
+      // Owner path succeeded — patch local state and done
+      set({
+        allFarmstands: get().allFarmstands.map(f =>
+          f.id === id ? { ...f, ...updates, updatedAt: now } : f
+        ),
+      });
+      return;
+    }
+
+    // ── Owner path failed — try admin path ────────────────────────────────────
+    // Expected when an admin edits a farmstand they don't own.
+    if (__DEV__) console.log('[AdminStore] owner path did not succeed — trying admin_update_farmstand');
+
+    const { data: adminResult, error: adminRpcError } = await supabase.rpc<{ success: boolean; error?: string }>(
+      'admin_update_farmstand',
+      { p_farmstand_id: id, p_updates: snakeCaseUpdates },
+    );
+
+    if (__DEV__) console.log('[AdminStore] admin_update_farmstand result:', JSON.stringify(adminResult), '| rpcError:', adminRpcError?.message ?? null);
+
+    const adminOk = !adminRpcError && (adminResult as { success: boolean } | null)?.success === true;
+
+    if (adminOk) {
+      set({
+        allFarmstands: get().allFarmstands.map(f =>
+          f.id === id ? { ...f, ...updates, updatedAt: now } : f
+        ),
+      });
+      return;
+    }
+
+    // ── Both paths failed — surface the most useful error ────────────────────
+    const errMsg =
+      (ownerResult as { error?: string } | null)?.error
+      ?? (adminResult as { error?: string } | null)?.error
+      ?? adminRpcError?.message
+      ?? ownerRpcError?.message
+      ?? 'Failed to save farmstand';
+    if (__DEV__) console.warn('[AdminStore] updateFarmstand — both owner and admin paths failed:', errMsg);
+    throw new Error(errMsg);
   },
 
   deleteFarmstand: async (id: string) => {
-    console.log('[AdminStore] deleteFarmstand started — id:', id);
+    if (__DEV__) console.log('[AdminStore] deleteFarmstand — farmstandId:', id, '| calling RPC admin_soft_delete_farmstand');
 
-    // Attempt direct Supabase soft delete first
-    const { data, error } = await supabase
-      .from<Record<string, unknown>>('farmstands')
-      .update({ deleted_at: new Date().toISOString() })
-      .eq('id', id)
-      .select('id') // confirms update happened
-      .execute();
+    // Use admin_soft_delete_farmstand RPC (SECURITY DEFINER, bypasses RLS)
+    const { data: rpcData, error: rpcError } = await supabase
+      .rpc('admin_soft_delete_farmstand', { p_farmstand_id: id });
 
-    const needsBackendFallback = error || !data || data.length === 0;
+    if (__DEV__) console.log('[AdminStore] deleteFarmstand — RPC result:', JSON.stringify(rpcData), '| error:', rpcError?.message ?? null);
 
-    if (needsBackendFallback) {
-      // RLS may be blocking the direct update — fall back to the backend route
-      // which uses service role key and allows admin users to bypass ownership checks
-      console.log('[AdminStore] Supabase soft delete blocked/failed, falling back to backend route. error:', error?.message);
+    if (rpcError) {
+      // RPC call itself failed (network error, function not found, etc.) — fall back to backend
+      console.log('[AdminStore] deleteFarmstand — RPC error, falling back to backend. error:', rpcError.message);
       const backendUrl = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
       const session = await getValidSession();
       if (!session?.access_token) throw new Error('Session expired. Please sign in again.');
@@ -1336,9 +1249,14 @@ export const useAdminStore = create<AdminState>((set, get) => ({
         console.error('[AdminStore] Backend delete failed:', backendResp.status, errMsg);
         throw new Error(errMsg);
       }
-      console.log('[AdminStore] Backend delete success — id:', id);
+      console.log('[AdminStore] Backend delete (fallback) success — id:', id);
     } else {
-      console.log('[AdminStore] Supabase soft delete success — id:', id);
+      // RPC returned — check success flag from the function's return value
+      const result = rpcData as { success: boolean; error?: string } | null;
+      if (result && result.success === false) {
+        throw new Error(result.error || 'Failed to delete farmstand');
+      }
+      if (__DEV__) console.log('[AdminStore] deleteFarmstand — RPC success, farmstandId:', id);
     }
 
     // Remove from local state immediately and clear premium for former owners
@@ -1751,6 +1669,8 @@ export const useAdminStore = create<AdminState>((set, get) => ({
       const session = await getValidSession();
       if (!session?.access_token) return { error: 'Session expired. Please sign in again.' };
 
+      if (__DEV__) console.log('[AdminStore] loadManagedUsers — backend URL:', backendUrl ? `${backendUrl}/api/admin/users` : '(EXPO_PUBLIC_VIBECODE_BACKEND_URL not configured)');
+
       const resp = await fetch(`${backendUrl}/api/admin/users`, {
         headers: {
           Authorization: `Bearer ${session.access_token}`,
@@ -1781,7 +1701,7 @@ export const useAdminStore = create<AdminState>((set, get) => ({
       get().setManagedUsers(filtered);
       return {};
     } catch (err) {
-      console.error('[AdminStore] loadManagedUsers error:', err);
+      if (__DEV__) console.warn('[AdminStore] loadManagedUsers error:', err);
       return { error: 'Network error. Please try again.' };
     }
   },
@@ -2173,45 +2093,61 @@ export const useAdminStore = create<AdminState>((set, get) => ({
         return { success: false, error: 'Session expired. Please sign in again.' };
       }
 
-      // Use the backend route exclusively — it runs with service role so the
-      // DB trigger (which updates farmstands) succeeds without permission errors.
-      let submitSuccess = false;
-      let submitError: string | null = null;
+      if (__DEV__) {
+        console.log('[ClaimSubmit] EXPO_PUBLIC_SUPABASE_URL:', process.env.EXPO_PUBLIC_SUPABASE_URL ? 'present' : 'MISSING');
+        console.log('[ClaimSubmit] EXPO_PUBLIC_SUPABASE_ANON_KEY:', process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ? 'present' : 'MISSING');
+        console.log('[ClaimSubmit] userId:', request.requester_id);
+        console.log('[ClaimSubmit] farmstandId:', request.farmstand_id);
+        console.log('[ClaimSubmit] evidenceUrlCount:', request.evidence_urls?.length ?? 0);
+        console.log('[ClaimSubmit] firstEvidenceUrl:', request.evidence_urls?.[0]?.slice(0, 80) ?? 'none');
+        console.log('[ClaimSubmit] path: submit_claim_request RPC');
+      }
 
-      const backendUrl = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
-      const resp = await fetch(`${backendUrl}/api/submit-claim`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
+      const { data: rpcData, error: rpcError } = await supabase.rpc<{ success: boolean; error?: string; claim_request_id?: string }>(
+        'submit_claim_request',
+        {
+          p_farmstand_id:    request.farmstand_id,
+          p_user_id:         request.requester_id,
+          p_requester_name:  request.requester_name.trim(),
+          p_requester_email: request.requester_email.trim().toLowerCase(),
+          p_evidence_urls:   request.evidence_urls || [],
+          p_notes:           request.notes?.trim() || null,
         },
-        body: JSON.stringify({
-          farmstand_id: request.farmstand_id,
-          requester_name: request.requester_name.trim(),
-          requester_email: request.requester_email.trim().toLowerCase(),
-          evidence_urls: request.evidence_urls || [],
-          notes: request.notes?.trim() || null,
-        }),
-      });
-      console.log('[AdminStore] Backend submit-claim status:', resp.status);
-      const bct7 = resp.headers.get('content-type') ?? '';
-      if (!bct7.includes('application/json')) {
-        console.log('[AdminStore] submit-claim non-JSON response (HTTP', resp.status, '), content-type:', bct7);
-        return { success: false, error: `Unexpected response from server (HTTP ${resp.status}). Please try again.` };
-      }
-      const respData = await resp.json() as { success: boolean; error?: string };
-      if (resp.ok && respData.success) {
-        submitSuccess = true;
-      } else {
-        submitError = respData?.error || `Failed to submit claim (${resp.status}). Please try again.`;
+      );
+
+      if (__DEV__) {
+        console.log('[ClaimSubmit] RPC rpcError:', rpcError ? rpcError.message : 'none');
+        console.log('[ClaimSubmit] RPC rpcData:', JSON.stringify(rpcData));
       }
 
-      if (!submitSuccess) {
-        console.error('[AdminStore] Claim submit failed:', submitError);
-        return { success: false, error: submitError || 'Failed to submit claim request.' };
+      if (rpcError || !rpcData?.success) {
+        if (__DEV__) console.warn('[AdminStore] submit_claim_request failed:', rpcError?.message ?? rpcData?.error);
+        return { success: false, error: 'Claim could not be submitted. Please try again.' };
       }
 
-      console.log('[AdminStore] Claim submitted successfully');
+      console.log('[AdminStore] Claim submitted successfully — claim_request_id:', (rpcData as { claim_request_id?: string }).claim_request_id ?? 'not returned');
+
+      // DEV verification: confirm the row is visible via direct table read (checks RLS / insert success)
+      if (__DEV__) {
+        try {
+          const { data: verifyData, error: verifyError } = await supabase
+            .from<Record<string, unknown>>('claim_requests')
+            .select('id, status, created_at, evidence_urls')
+            .eq('farmstand_id', request.farmstand_id)
+            .eq('user_id', request.requester_id)
+            .order('created_at', { ascending: false })
+            .execute();
+          console.log('[ClaimSubmit] DEV verify — error:', verifyError?.message ?? 'none');
+          console.log('[ClaimSubmit] DEV verify — rows found:', verifyData?.length ?? 0);
+          if (verifyData && verifyData.length > 0) {
+            verifyData.slice(0, 3).forEach((r, idx) => {
+              console.log(`[ClaimSubmit] DEV verify row[${idx}] id=${r.id} status=${r.status} created_at=${r.created_at} evidenceCount=${Array.isArray(r.evidence_urls) ? (r.evidence_urls as string[]).length : 0}`);
+            });
+          }
+        } catch (ve) {
+          console.warn('[ClaimSubmit] DEV verify exception:', ve);
+        }
+      }
 
       // Optimistic update: immediately mark this farmstand as pending in the claim overlay
       // so FarmstandDetail shows "Claim pending" instantly without waiting for a refetch
@@ -2243,10 +2179,40 @@ export const useAdminStore = create<AdminState>((set, get) => ({
       await AsyncStorage.setItem('admin_claim_requests', JSON.stringify(claimRequests));
       set({ claimRequests });
 
+      // Best-effort admin email — fire-and-forget, mirrors farmstand_submitted pattern
+      const farmstandName = get().allFarmstands.find(f => f.id === request.farmstand_id)?.name ?? '';
+      const hwUrl = `${getSupabaseUrl()}/functions/v1/hyper-worker`;
+      console.log('[ClaimSubmit] hyper-worker firing — type: claim_requested | url:', hwUrl);
+      fetch(hwUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? ''}`,
+        },
+        body: JSON.stringify({
+          type: 'claim_requested',
+          data: {
+            farmstand_name:    farmstandName,
+            farmstand_id:      request.farmstand_id,
+            requester_name:    request.requester_name.trim(),
+            requester_email:   request.requester_email.trim().toLowerCase(),
+            requester_user_id: request.requester_id,
+            notes:             request.notes?.trim() || null,
+            attachment_info:   request.evidence_urls && request.evidence_urls.length > 0
+              ? `${request.evidence_urls.length} photo(s) attached`
+              : null,
+            submitted_at: now,
+          },
+        }),
+      }).then(async (r) => {
+        const body = await r.text().catch(() => '(unreadable)');
+        console.log('[ClaimSubmit] hyper-worker response — status:', r.status, '| body:', body);
+      }).catch((err: unknown) => console.warn('[ClaimSubmit] hyper-worker network error:', err));
+
       return { success: true };
     } catch (err: any) {
-      console.error('[AdminStore] Supabase claim submit exception:', err);
-      return { success: false, error: err?.message || 'An unexpected error occurred. Please try again.' };
+      if (__DEV__) console.warn('[AdminStore] Supabase claim submit exception:', err);
+      return { success: false, error: 'Claim could not be submitted. Please try again.' };
     }
   },
 

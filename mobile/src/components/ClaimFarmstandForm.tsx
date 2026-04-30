@@ -31,6 +31,7 @@ import {
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { useAdminStore } from '@/lib/admin-store';
 import { Farmstand } from '@/lib/farmer-store';
 import { useUserStore } from '@/lib/user-store';
@@ -124,48 +125,56 @@ export function ClaimFarmstandForm({
       // ── In resubmit mode, fetch claim data from the backend (service-role, bypasses RLS) ──
       if (forceResubmitMode && userId) {
         console.log('[ClaimState] forceResubmitMode — claimIdProp:', claimIdProp, 'userId:', userId, 'farmstandId:', farmstand.id);
+        try {
         const session = await getValidSession();
         if (session?.access_token) {
           try {
             const backendUrl = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
-            // If we have a specific claimId from the push/alert, append it so the backend
-            // can fetch that exact record (including denied claims)
-            const claimIdQuery = claimIdProp ? `&claim_id=${claimIdProp}` : '';
-            const resp = await fetch(`${backendUrl}/api/my-claim?farmstand_id=${farmstand.id}${claimIdQuery}`, {
-              headers: { Authorization: `Bearer ${session.access_token}` },
-            });
-            console.log('[ClaimState] /api/my-claim status:', resp.status, 'claimIdProp:', claimIdProp);
-            const cfct1 = resp.headers.get('content-type') ?? '';
-            if (resp.ok && cfct1.includes('application/json')) {
-              const data = await resp.json() as { success: boolean; claim: null | {
-                id: string;
-                requester_name: string | null;
-                requester_email: string | null;
-                notes: string | null;
-                evidence_urls: string[];
-                admin_message: string | null;
-                request_more_info: string | null;
-                status: string;
-              }};
-              console.log('[ClaimState] /api/my-claim result', { found: !!data.claim, status: data.claim?.status, name: data.claim?.requester_name, photos: data.claim?.evidence_urls?.length });
-              if (data.success && data.claim) {
-                const claim = data.claim;
-                setExistingClaimId(claim.id);
-                if (claim.requester_name) setFullName(claim.requester_name);
-                if (claim.notes) setNote(claim.notes);
-                setExistingEvidenceUrls(Array.isArray(claim.evidence_urls) ? claim.evidence_urls : []);
-                console.log('[ClaimState] prefilled from backend — claimId:', claim.id, 'status:', claim.status, 'name:', claim.requester_name, 'photos:', claim.evidence_urls?.length);
+            if (!backendUrl) {
+              if (__DEV__) console.log('[ClaimForm] EXPO_PUBLIC_VIBECODE_BACKEND_URL not set — skipping backend fetch, using Supabase direct');
+            } else {
+              // If we have a specific claimId from the push/alert, append it so the backend
+              // can fetch that exact record (including denied claims)
+              const claimIdQuery = claimIdProp ? `&claim_id=${claimIdProp}` : '';
+              const resp = await fetch(`${backendUrl}/api/my-claim?farmstand_id=${farmstand.id}${claimIdQuery}`, {
+                headers: { Authorization: `Bearer ${session.access_token}` },
+              });
+              console.log('[ClaimState] /api/my-claim status:', resp.status, 'claimIdProp:', claimIdProp);
+              const cfct1 = resp.headers.get('content-type') ?? '';
+              if (resp.ok && cfct1.includes('application/json')) {
+                const data = await resp.json() as { success: boolean; claim: null | {
+                  id: string;
+                  requester_name: string | null;
+                  requester_email: string | null;
+                  notes: string | null;
+                  evidence_urls: string[];
+                  admin_message: string | null;
+                  request_more_info: string | null;
+                  status: string;
+                }};
+                console.log('[ClaimState] /api/my-claim result', { found: !!data.claim, status: data.claim?.status, name: data.claim?.requester_name, photos: data.claim?.evidence_urls?.length });
+                if (data.success && data.claim) {
+                  const claim = data.claim;
+                  setExistingClaimId(claim.id);
+                  if (claim.requester_name) setFullName(claim.requester_name);
+                  if (claim.notes) setNote(claim.notes);
+                  setExistingEvidenceUrls(Array.isArray(claim.evidence_urls) ? claim.evidence_urls : []);
+                  console.log('[ClaimState] prefilled from backend — claimId:', claim.id, 'status:', claim.status, 'name:', claim.requester_name, 'photos:', claim.evidence_urls?.length);
+                  setClaimState('needs_more_info');
+                  return;
+                }
+                // Backend returned success but no claim — show edit form anyway (user can resubmit fresh)
+                console.log('[ClaimState] forceResubmitMode: no pending/denied claim from backend, opening edit form fresh');
                 setClaimState('needs_more_info');
                 return;
               }
-              // Backend returned success but no claim — show edit form anyway (user can resubmit fresh)
-              console.log('[ClaimState] forceResubmitMode: no pending/denied claim from backend, opening edit form fresh');
-              setClaimState('needs_more_info');
-              return;
             }
           } catch (err) {
             console.log('[ClaimState] /api/my-claim fetch failed, falling back to Supabase direct:', err);
           }
+        }
+        } catch (err) {
+          if (__DEV__) console.log('[ClaimState] forceResubmitMode session/fetch error, falling back:', err);
         }
       }
 
@@ -179,8 +188,7 @@ export function ClaimFarmstandForm({
             .eq('user_id', userId)
             .in('status', ['pending', 'denied'])
             .order('created_at', { ascending: false })
-            .limit(1)
-            .execute();
+            .limit(1);
 
           console.log('[ClaimState] Supabase result', { rowCount: data?.length ?? 0, fetchError: !!fetchError, forceResubmitMode });
 
@@ -267,7 +275,10 @@ export function ClaimFarmstandForm({
       setClaimState(derivedState);
     };
 
-    checkClaimStatus();
+    checkClaimStatus().catch((err) => {
+      if (__DEV__) console.log('[ClaimForm] checkClaimStatus unhandled error:', err);
+      setClaimState('error');
+    });
   }, [farmstand.id, userId, forceResubmitMode]);
 
   // Handle login redirect
@@ -395,26 +406,43 @@ export function ClaimFarmstandForm({
     try {
       let uploadedUrls: string[] = [];
 
+      if (__DEV__) console.log('[ClaimForm] uploading', evidencePhotos?.length ?? 0, 'photo(s) for farmstandId:', farmstand.id);
       setUploadProgress('Uploading photos...');
       for (let i = 0; i < (evidencePhotos?.length || 0); i++) {
         const uri = evidencePhotos[i];
         if (!uri) continue;
 
+        if (__DEV__) console.log('[ClaimForm] uploading photo', i, 'uri:', uri.slice(0, 60));
+
+        // Convert and compress to JPEG before upload — handles HEIC/HEIF and large files
+        if (__DEV__) console.log('[ClaimForm] photo', i, 'converting/compressing to JPEG (max 1600px, quality 0.82)');
+        const compressed = await manipulateAsync(
+          uri,
+          [{ resize: { width: 1600 } }],
+          { compress: 0.82, format: SaveFormat.JPEG },
+        );
+        if (__DEV__) console.log('[ClaimForm] photo', i, 'converted — uri:', compressed.uri.slice(0, 60), '| dims:', compressed.width, 'x', compressed.height);
+        if (__DEV__) console.log('[ClaimForm] photo', i, 'finalMIME: image/jpeg');
+
         const filePath = `claims/${sessionUserId}/${farmstand.id}/${Date.now()}-${i}.jpg`;
         const { url, error: uploadError } = await uploadToSupabaseStorage(
           BUCKET,
           filePath,
-          uri,
-          'image/jpeg'
+          compressed.uri,
+          'image/jpeg',
         );
 
         if (uploadError) {
-          if (__DEV__) console.warn('[ClaimForm] Upload error:', uploadError);
-          throw uploadError;
+          if (__DEV__) console.warn('[ClaimForm] Upload error:', uploadError.message ?? String(uploadError));
+          throw new Error(uploadError.message ?? 'Photo upload failed. Please try again.');
         }
 
-        if (url) uploadedUrls.push(url);
+        if (url) {
+          if (__DEV__) console.log('[ClaimForm] photo', i, 'uploaded OK:', url.slice(0, 80));
+          uploadedUrls.push(url);
+        }
       }
+      if (__DEV__) console.log('[ClaimForm] all uploads done — uploadedUrls.length:', uploadedUrls.length);
 
       const requesterName = user?.name ?? fullName.trim();
       const requesterEmail = user?.email ?? email.trim().toLowerCase();
@@ -467,6 +495,7 @@ export function ClaimFarmstandForm({
       } else {
         // New claim submission
         setUploadProgress('Submitting claim request...');
+        if (__DEV__) console.log('[ClaimForm] calling submitClaimRequest — farmstandId:', farmstand.id, 'photoCount:', uploadedUrls.length, 'urls:', uploadedUrls.slice(0, 2).map(u => u.slice(0, 60)));
         const result = await submitClaimRequest({
           farmstand_id: farmstand.id,
           requester_id: sessionUserId,
@@ -476,11 +505,12 @@ export function ClaimFarmstandForm({
           notes: note?.trim() || null,
         });
 
+        if (__DEV__) console.log('[ClaimForm] submitClaimRequest result — success:', result.success, '| error:', result.error ?? 'none');
         console.log('[CLAIM] submitClaimRequest result:', result);
 
         if (!result.success) {
           const msg = result.error ?? 'Failed to submit claim request.';
-          console.error('[CLAIM] Submit failed:', msg);
+          if (__DEV__) console.warn('[CLAIM] Submit failed:', msg);
           setError(msg);
           Alert.alert('Claim submission failed', msg);
           return;
@@ -609,6 +639,18 @@ export function ClaimFarmstandForm({
           <View className="items-center py-20">
             <ActivityIndicator size="large" color="#2D5A3D" />
             <Text className="text-wood mt-4 text-base">Checking availability...</Text>
+          </View>
+        ) : claimState === 'error' ? (
+          <View className="items-center py-16 px-4">
+            <View className="w-20 h-20 rounded-full bg-red-100 items-center justify-center mb-5">
+              <AlertCircle size={40} color="#DC2626" />
+            </View>
+            <Text className="text-charcoal font-bold text-xl text-center mb-2">
+              Something went wrong
+            </Text>
+            <Text className="text-wood text-base text-center leading-6">
+              We couldn't load the claim status. Please close and try again.
+            </Text>
           </View>
         ) : (
           <>
@@ -1047,7 +1089,7 @@ export function ClaimFarmstandForm({
           >
             <Text className="font-semibold text-base text-cream">Done</Text>
           </Pressable>
-        ) : isClaimedByOther || isClaimedByYou ? (
+        ) : isClaimedByOther || isClaimedByYou || claimState === 'error' ? (
           <Pressable
             onPress={onClose}
             className="py-4 rounded-xl flex-row items-center justify-center bg-gray-200"

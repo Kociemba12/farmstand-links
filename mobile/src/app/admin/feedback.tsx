@@ -43,7 +43,7 @@ import Animated, {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
 import { AdminGuard } from '@/components/AdminGuard';
-import { getValidSession } from '@/lib/supabase';
+import { getValidSession, supabase, type SupabaseError } from '@/lib/supabase';
 import { useUserStore } from '@/lib/user-store';
 
 const BG_COLOR = '#FAF7F2';
@@ -73,14 +73,14 @@ interface FeedbackRow {
 
 interface ThreadMessage {
   id: string;
-  ticket_id: string;
+  feedback_id: string;
   sender_role: 'farmer' | 'admin';
   sender_user_id: string;
   sender_email: string;
   message_text: string;
   created_at: string;
-  is_visible_to_farmer: number;
-  attachment_urls?: string | null;
+  is_visible_to_farmer: boolean | number;
+  attachment_urls?: string[] | null;
 }
 
 function formatDate(dateString: string): string {
@@ -284,36 +284,39 @@ function AdminFeedbackContent() {
   }, []);
 
   const loadFeedback = useCallback(async () => {
+    if (__DEV__) console.log('[AdminFeedback] loadFeedback — started | activeTab:', statusFilter);
     try {
-      const session = await getValidSession();
-      if (!session) return;
+      const { data, error } = await supabase
+        .from<FeedbackRow>('feedback')
+        .select('*')
+        .neq('source_screen', 'support_dismissed')
+        .order('created_at', { ascending: false })
+        .requireAuth()
+        .execute();
 
-      const url = `${BACKEND_URL}/api/feedback${statusFilter !== 'all' ? `?status=${statusFilter}` : ''}`;
-      const resp = await fetch(url, {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
-
-      const fct1 = resp.headers.get('content-type') ?? '';
-      if (!fct1.includes('application/json')) {
-        console.log('[AdminFeedback] loadFeedback non-JSON response (HTTP', resp.status, '), content-type:', fct1);
+      if (error) {
+        const sbErr = error as SupabaseError;
+        if (__DEV__) {
+          console.warn('[AdminFeedback] loadFeedback Supabase error | code:', sbErr.code ?? 'N/A', '| message:', sbErr.message, '| details:', sbErr.details ?? 'N/A');
+        }
+        if (sbErr.code === '42P01' || (sbErr.message ?? '').includes('does not exist')) {
+          setTableMissing(true);
+          setFeedbackItems([]);
+        }
         return;
       }
-      const json = await resp.json() as { success: boolean; data?: FeedbackRow[]; error?: string };
 
-      if (json.error === 'feedback_table_missing') {
-        setTableMissing(true);
-        setFeedbackItems([]);
-      } else if (json.success && json.data) {
-        setTableMissing(false);
-        setFeedbackItems(json.data);
-      }
+      if (__DEV__) console.log('[AdminFeedback] loadFeedback — rows returned:', data?.length ?? 0, '| activeTab:', statusFilter);
+      setTableMissing(false);
+      setFeedbackItems(data ?? []);
     } catch (err) {
       if (__DEV__) console.warn('[AdminFeedback] Load error:', err instanceof Error ? err.message : String(err));
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [statusFilter]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // All rows fetched once; status tab is filtered client-side
 
   useFocusEffect(
     useCallback(() => {
@@ -327,26 +330,24 @@ function AdminFeedbackContent() {
     loadFeedback();
   }, [loadFeedback]);
 
-  const loadThread = useCallback(async (ticketId: string) => {
+  const loadThread = useCallback(async (feedbackId: string) => {
     setIsLoadingThread(true);
     try {
-      const session = await getValidSession();
-      if (!session) return;
-      const resp = await fetch(`${BACKEND_URL}/api/feedback/${ticketId}/messages`, {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
-      const fct2 = resp.headers.get('content-type') ?? '';
-      if (!fct2.includes('application/json')) {
-        console.log('[AdminFeedback] loadThread non-JSON response (HTTP', resp.status, '), content-type:', fct2);
-        return;
-      }
-      const json = await resp.json() as { success: boolean; data?: ThreadMessage[]; error?: string };
-      if (json.success && json.data) {
-        console.log('[AdminFeedback][loadThread] fetched', json.data.length, 'message(s)');
-        json.data.forEach((msg, idx) => {
-          console.log(`[AdminFeedback][loadThread] msg[${idx}] id=${msg.id} role=${msg.sender_role} attachment_urls=${JSON.stringify(msg.attachment_urls)}`);
-        });
-        setThread(json.data);
+      if (__DEV__) console.log('[AdminFeedback] loadThread — feedbackId:', feedbackId, '| table: feedback_messages');
+      const { data, error } = await supabase
+        .from<ThreadMessage>('feedback_messages')
+        .select('*')
+        .eq('feedback_id', feedbackId)
+        .order('created_at', { ascending: true })
+        .requireAuth()
+        .execute();
+
+      if (error) {
+        const sbErr = error as SupabaseError;
+        if (__DEV__) console.warn('[AdminFeedback] loadThread error | code:', sbErr.code ?? 'N/A', '| message:', sbErr.message, '| details:', sbErr.details ?? 'N/A');
+      } else {
+        if (__DEV__) console.log('[AdminFeedback] loadThread — messages returned:', data?.length ?? 0);
+        setThread(data ?? []);
       }
     } catch (err) {
       if (__DEV__) console.warn('[AdminFeedback] loadThread error:', err instanceof Error ? err.message : String(err));
@@ -356,6 +357,12 @@ function AdminFeedbackContent() {
   }, []);
 
   const handleOpenDetail = useCallback((item: FeedbackRow) => {
+    if (__DEV__) {
+      console.log('[AdminFeedback] handleOpenDetail — ticketId:', item.id);
+      console.log('[AdminFeedback] handleOpenDetail — message exists:', !!item.message);
+      console.log('[AdminFeedback] handleOpenDetail — screenshot_urls:', JSON.stringify(item.screenshot_urls));
+      console.log('[AdminFeedback] handleOpenDetail — image count:', item.screenshot_urls?.length ?? 0);
+    }
     setSelectedItem(item);
     setThread([]);
     setReplyText('');
@@ -391,49 +398,63 @@ function AdminFeedbackContent() {
 
   const handleSendReply = useCallback(async () => {
     if (!selectedItem || !replyText.trim()) return;
-    const adminUserId = useUserStore.getState().user?.id ?? 'not-in-store';
-    if (__DEV__) console.log('[AdminReply] Send tapped — ticket_id:', selectedItem.id, '| admin_user_id:', adminUserId, '| reply_length:', replyText.trim().length);
+    const adminUser = useUserStore.getState().user;
+    const adminUserId = adminUser?.id ?? '';
+    const adminEmail = adminUser?.email ?? '';
+    if (__DEV__) console.log('[AdminReply] Send tapped — feedback_id:', selectedItem.id, '| table: feedback_messages via add_feedback_reply RPC');
     setIsSendingReply(true);
     try {
-      const session = await getValidSession();
-      if (!session) return;
-      const payload = { reply_text: replyText.trim() };
-      const endpoint = `${BACKEND_URL}/api/feedback/${selectedItem.id}/reply`;
-      if (__DEV__) console.log('[AdminReply] POST', endpoint, '| auth_token_present:', !!session.access_token);
-      const resp = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify(payload),
-      });
-      const fct3 = resp.headers.get('content-type') ?? '';
-      if (!fct3.includes('application/json')) {
-        if (__DEV__) console.warn('[AdminReply] non-JSON response — HTTP', resp.status, '| content-type:', fct3);
+      const { data: rpcData, error: rpcError } = await supabase.rpc<{ success: boolean; id?: string; error?: string }>(
+        'add_feedback_reply',
+        {
+          p_feedback_id:     selectedItem.id,
+          p_sender_role:     'admin',
+          p_sender_user_id:  adminUserId,
+          p_sender_email:    adminEmail,
+          p_message_text:    replyText.trim(),
+          p_attachment_urls: [],
+        }
+      );
+
+      if (rpcError) {
+        const sbErr = rpcError as SupabaseError;
+        if (__DEV__) console.warn('[AdminReply] add_feedback_reply RPC error | code:', sbErr.code ?? 'N/A', '| message:', sbErr.message, '| details:', sbErr.details ?? 'N/A');
         Alert.alert('Reply could not be saved. Please try again.');
         return;
       }
-      const json = await resp.json() as { success: boolean; adminMessage?: ThreadMessage };
-      if (__DEV__) console.log('[AdminReply] response status:', resp.status, '| body:', JSON.stringify(json));
-      if (json.success && json.adminMessage) {
-        if (__DEV__) console.log('[AdminReply] message saved — id:', json.adminMessage.id);
-        setThread((prev) => [...prev, json.adminMessage!]);
-        setReplyText('');
-        setFeedbackItems((prev) =>
-          prev.map((f) => (f.id === selectedItem.id ? { ...f, status: 'read' } : f))
-        );
-        setSelectedItem((prev) => prev ? { ...prev, status: 'read' } : prev);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        setTimeout(() => {
-          if (typeof scrollViewRef.current?.scrollTo === 'function') {
-            scrollViewRef.current.scrollTo({ y: 999999, animated: true });
-          }
-        }, 100);
-      } else {
-        if (__DEV__) console.warn('[AdminReply] reply failed — response body:', JSON.stringify(json));
+
+      if (__DEV__) console.log('[AdminReply] add_feedback_reply RPC result — success:', rpcData?.success, '| id:', rpcData?.id ?? 'N/A');
+
+      if (!rpcData?.success) {
+        if (__DEV__) console.warn('[AdminReply] RPC returned success=false:', rpcData?.error);
         Alert.alert('Reply could not be saved. Please try again.');
+        return;
       }
+
+      const newMsg: ThreadMessage = {
+        id:                   rpcData.id ?? `${Date.now()}`,
+        feedback_id:          selectedItem.id,
+        sender_role:          'admin',
+        sender_user_id:       adminUserId,
+        sender_email:         adminEmail,
+        message_text:         replyText.trim(),
+        created_at:           new Date().toISOString(),
+        is_visible_to_farmer: true,
+        attachment_urls:      null,
+      };
+
+      setThread((prev) => [...prev, newMsg]);
+      setReplyText('');
+      setFeedbackItems((prev) =>
+        prev.map((f) => (f.id === selectedItem.id ? { ...f, status: 'read' } : f))
+      );
+      setSelectedItem((prev) => prev ? { ...prev, status: 'read' } : prev);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setTimeout(() => {
+        if (typeof scrollViewRef.current?.scrollTo === 'function') {
+          scrollViewRef.current.scrollTo({ y: 999999, animated: true });
+        }
+      }, 100);
     } catch (err) {
       if (__DEV__) console.warn('[AdminReply] sendReply threw:', err instanceof Error ? err.message : String(err));
       Alert.alert('Reply could not be saved. Please try again.');
@@ -489,6 +510,9 @@ function AdminFeedbackContent() {
   }, [selectedItem]);
 
   const newCount = feedbackItems.filter((f) => f.status === 'new').length;
+  const filteredItems = statusFilter === 'all'
+    ? feedbackItems
+    : feedbackItems.filter((f) => f.status === statusFilter);
 
   return (
     <View className="flex-1" style={{ backgroundColor: BG_COLOR }}>
@@ -584,7 +608,7 @@ function AdminFeedbackContent() {
             />
           }
         >
-          {feedbackItems.length === 0 ? (
+          {filteredItems.length === 0 ? (
             <Animated.View entering={FadeInDown.duration(400)} className="items-center pt-16">
               <View className="w-16 h-16 rounded-full bg-stone-100 items-center justify-center mb-4">
                 <MessageSquare size={28} color="#A8A29E" />
@@ -595,7 +619,7 @@ function AdminFeedbackContent() {
               </Text>
             </Animated.View>
           ) : (
-            feedbackItems.map((item, i) => (
+            filteredItems.map((item, i) => (
               <FeedbackCard
                 key={item.id}
                 item={item}
@@ -670,6 +694,52 @@ function AdminFeedbackContent() {
                 <View className="px-5 mb-2">
                   <Text className="text-stone-400 text-xs font-semibold uppercase tracking-wider mb-3">Conversation</Text>
 
+                  {/* Original submitted message — always shown first, from the feedback row */}
+                  <View className="mb-3" style={{ alignItems: 'flex-start' }}>
+                    <View style={{ maxWidth: '85%' }}>
+                      <View
+                        style={{
+                          backgroundColor: '#FFFFFF',
+                          borderRadius: 16,
+                          borderBottomLeftRadius: 4,
+                          padding: 12,
+                          shadowColor: '#000',
+                          shadowOffset: { width: 0, height: 1 },
+                          shadowOpacity: 0.08,
+                          shadowRadius: 4,
+                          elevation: 1,
+                        }}
+                      >
+                        <Text style={{ color: '#1C1917', fontSize: 14, lineHeight: 20 }}>
+                          {selectedItem.message}
+                        </Text>
+                        {(selectedItem.screenshot_urls?.length ?? 0) > 0 &&
+                          selectedItem.screenshot_urls!.map((url, i) => (
+                            <TouchableOpacity
+                              key={i}
+                              onPress={() => openImageViewer(selectedItem.screenshot_urls ?? [], i)}
+                              activeOpacity={0.85}
+                            >
+                              <Image
+                                source={{ uri: url }}
+                                style={{
+                                  width: '100%',
+                                  aspectRatio: 4 / 3,
+                                  borderRadius: 10,
+                                  marginTop: 8,
+                                }}
+                                resizeMode="cover"
+                              />
+                            </TouchableOpacity>
+                          ))
+                        }
+                      </View>
+                      <Text style={{ color: '#A8A29E', fontSize: 11, marginTop: 4, marginLeft: 4 }}>
+                        {selectedItem.user_name ?? selectedItem.user_email} · {formatDate(selectedItem.created_at)}
+                      </Text>
+                    </View>
+                  </View>
+
                   {isLoadingThread ? (
                     <View className="items-center py-4">
                       <ActivityIndicator size="small" color="#2F6F4E" />
@@ -677,23 +747,10 @@ function AdminFeedbackContent() {
                   ) : (
                     thread.map((msg) => {
                       const isAdmin = msg.sender_role === 'admin';
-
-                      // Parse attachment_urls — stored as a JSON string array or null
-                      let imageUrls: string[] = [];
-                      if (msg.attachment_urls) {
-                        try {
-                          const parsed = JSON.parse(msg.attachment_urls);
-                          if (Array.isArray(parsed)) {
-                            imageUrls = parsed.filter((u): u is string => typeof u === 'string');
-                          } else if (typeof parsed === 'string') {
-                            imageUrls = [parsed];
-                          }
-                        } catch {
-                          // If it's already a plain URL string (not JSON), use it directly
-                          imageUrls = [msg.attachment_urls];
-                        }
-                        console.log(`[AdminFeedback][render] msg ${msg.id} → imageUrls:`, imageUrls);
-                      }
+                      const imageUrls: string[] = Array.isArray(msg.attachment_urls)
+                        ? msg.attachment_urls.filter((u): u is string => typeof u === 'string')
+                        : [];
+                      if (__DEV__ && imageUrls.length > 0) console.log(`[AdminFeedback][render] msg ${msg.id} → imageUrls:`, imageUrls);
 
                       return (
                         <View key={msg.id} className="mb-3" style={{ alignItems: isAdmin ? 'flex-end' : 'flex-start' }}>

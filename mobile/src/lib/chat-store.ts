@@ -977,81 +977,110 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
   },
 
   // ─── Direct messages from public.messages table ───────────────────────────
-  loadDirectMessages: async (farmstandId: string, currentUserId: string, otherUserId: string): Promise<DirectMessage[]> => {
-    const session = await getValidSession();
-    if (!session?.access_token) return [];
+  // otherUserId param kept for call-site compatibility but not used in the filter.
+  // .requireAuth() is REQUIRED — this custom client defaults GET queries to allowAnon=true,
+  // which makes RLS see an unauthenticated request and return no rows.
+  // No limit/range/cursor/cutoff — fetch all matching rows in ascending order.
+  loadDirectMessages: async (farmstandId: string, currentUserId: string, _otherUserId: string): Promise<DirectMessage[]> => {
+    if (!isSupabaseConfigured()) return [];
 
     try {
-      const url = `${BACKEND_URL}/api/messages/thread?farmstand_id=${encodeURIComponent(farmstandId)}&other_user_id=${encodeURIComponent(otherUserId)}`;
-      console.log('[ChatStore] loadDirectMessages via backend - farmstand_id:', farmstandId, 'currentUserId:', currentUserId, 'otherUserId:', otherUserId);
-
-      const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${session.access_token}` },
+      const session = await getValidSession();
+      console.log('[loadDirectMessages AUTH CHECK]', {
+        hasSession: !!session,
       });
 
-      if (!res.ok) {
-        console.log('[ChatStore] loadDirectMessages backend error:', res.status, await res.text());
+      const { data, error } = await supabase
+        .from('messages')
+        .select('id, sender_id, receiver_id, farmstand_id, body, created_at')
+        .eq('farmstand_id', farmstandId)
+        .or(`sender_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`)
+        .order('created_at', { ascending: true })
+        .requireAuth();
+
+      console.log('[loadDirectMessages RESULT]', {
+        count: data?.length || 0,
+        error,
+        first: (data as DirectMessage[] | null)?.[0]
+          ? { body: (data as DirectMessage[])[0].body, created_at: (data as DirectMessage[])[0].created_at }
+          : null,
+        latest: (data as DirectMessage[] | null)?.[data!.length - 1]
+          ? { body: (data as DirectMessage[])[data!.length - 1].body, created_at: (data as DirectMessage[])[data!.length - 1].created_at }
+          : null,
+      });
+
+      if (error) {
+        console.log('[loadDirectMessages] ERROR:', error.message, error);
         return [];
       }
 
-      const dmct = res.headers.get('content-type') ?? '';
-      if (!dmct.includes('application/json')) {
-        console.log('[ChatStore] loadDirectMessages non-JSON response (HTTP', res.status, '), content-type:', dmct);
-        return [];
+      const messages: DirectMessage[] = ((data ?? []) as DirectMessage[]).map(row => ({
+        id: row.id,
+        sender_id: row.sender_id,
+        receiver_id: row.receiver_id,
+        farmstand_id: row.farmstand_id,
+        body: row.body,
+        created_at: row.created_at,
+      }));
+
+      if (__DEV__) {
+        console.log('[loadDirectMessages] returned', messages.length, 'messages');
+        if (messages.length > 0) {
+          console.log('[loadDirectMessages] latest body:', messages[messages.length - 1].body,
+            'created_at:', messages[messages.length - 1].created_at);
+        }
       }
-      const data = await res.json() as { messages?: DirectMessage[] };
-      const messages = data.messages ?? [];
-      console.log('[ChatStore] loadDirectMessages - returned:', messages.length, 'messages for sender:', currentUserId);
       return messages;
     } catch (err) {
-      console.log('[ChatStore] loadDirectMessages exception:', err);
+      console.log('[loadDirectMessages] EXCEPTION:', err instanceof Error ? err.message : String(err));
       return [];
     }
   },
 
   sendDirectMessage: async (farmstandId: string, senderId: string, receiverId: string, body: string): Promise<DirectMessage | null> => {
-    const backendUrl = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
+    if (!isSupabaseConfigured()) return null;
     const session = await getValidSession();
     if (!session?.access_token) {
-      console.log('[sendDirectMessage] ABORT: no valid session / access_token');
+      if (__DEV__) console.log('[sendDirectMessage] ABORT: no valid session');
       return null;
     }
 
-    console.log('[sendDirectMessage] → POST /api/messages/send farmstandId:', farmstandId, 'sender:', senderId, 'receiver:', receiverId);
+    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+    const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
+
+    if (__DEV__) console.log('[sendDirectMessage] INSERT into public.messages farmstandId:', farmstandId, 'sender:', senderId, 'receiver:', receiverId);
 
     try {
-      const res = await fetch(`${backendUrl}/api/messages/send`, {
+      const payload = {
+        sender_id: senderId,
+        receiver_id: receiverId,
+        farmstand_id: farmstandId,
+        body,
+      };
+
+      const res = await fetch(`${supabaseUrl}/rest/v1/messages`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          apikey: supabaseAnonKey,
           Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=representation',
         },
-        body: JSON.stringify({
-          farmstand_id: farmstandId,
-          receiver_id: receiverId,
-          message_body: body,
-        }),
+        body: JSON.stringify(payload),
       });
 
-      const responseText = await res.text();
-      console.log('[sendDirectMessage] HTTP status:', res.status);
-
       if (!res.ok) {
-        let parsed: { error?: string; farmstand_deleted?: boolean } = {};
-        try { parsed = JSON.parse(responseText); } catch { /* ignore */ }
-        console.log('[sendDirectMessage] FAILED — status:', res.status, 'error:', parsed.error ?? responseText);
+        const errText = await res.text();
+        if (__DEV__) console.log('[sendDirectMessage] INSERT FAILED status:', res.status, errText.slice(0, 200));
         return null;
       }
 
-      let data: { message?: DirectMessage } = {};
-      try { data = JSON.parse(responseText); } catch {
-        console.log('[sendDirectMessage] Could not parse response JSON:', responseText);
-      }
-      const inserted = data.message ?? null;
-      console.log('[sendDirectMessage] SUCCESS — id:', inserted?.id);
+      const rows = await res.json() as DirectMessage[];
+      const inserted = rows?.[0] ?? null;
+      if (__DEV__) console.log('[sendDirectMessage] INSERT SUCCESS id:', inserted?.id);
       return inserted;
     } catch (err) {
-      console.log('[sendDirectMessage] EXCEPTION:', err);
+      if (__DEV__) console.log('[sendDirectMessage] EXCEPTION:', err instanceof Error ? err.message : String(err));
       return null;
     }
   },

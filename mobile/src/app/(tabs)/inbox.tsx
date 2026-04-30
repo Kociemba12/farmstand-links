@@ -35,6 +35,26 @@ const CREAM = '#FDF8F3';
 const SAND = '#EDE8E0';
 const BACKEND_URL = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
 
+// ─── Raw Supabase conversation row ────────────────────────────────────────────
+interface ConversationRow {
+  id: string;
+  farmstand_id: string;
+  customer_id: string;
+  owner_id: string;
+  last_message_text: string | null;
+  last_message_at: string | null;
+  customer_unread_count: number | null;
+  owner_unread_count: number | null;
+  created_at: string;
+  updated_at: string;
+  farmstands?: {
+    name?: string | null;
+    photos?: string[] | null;
+    photo_url?: string | null;
+    deleted_at?: string | null;
+  } | null;
+}
+
 // ─── Conversation type ────────────────────────────────────────────────────────
 interface Conversation {
   farmstand_id: string;
@@ -602,17 +622,44 @@ export default function InboxScreen() {
     if (!session?.access_token) return;
     if (!silent) setConvLoading(true);
     try {
-      console.log('[Inbox] Loading conversations for user:', user.id);
-      const res = await fetch(`${BACKEND_URL}/api/messages/inbox`, {
-        headers: { Authorization: `Bearer ${session.access_token}` },
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+      const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
+      if (__DEV__) console.log('[Inbox] Loading conversations from public.conversations for user:', user.id);
+
+      const convUrl = new URL(`${supabaseUrl}/rest/v1/conversations`);
+      convUrl.searchParams.set('or', `(customer_id.eq.${user.id},owner_id.eq.${user.id})`);
+      convUrl.searchParams.set('order', 'last_message_at.desc.nullslast,updated_at.desc');
+      convUrl.searchParams.set('select', '*,farmstands(name,photos,photo_url,deleted_at)');
+
+      const res = await fetch(convUrl.toString(), {
+        headers: {
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${session.access_token}`,
+        },
       });
-      const text = await res.text();
       if (res.ok) {
-        let data: { conversations?: Conversation[] } = {};
-        try { data = JSON.parse(text); } catch { data = {}; }
-        const convs = data.conversations ?? [];
-        console.log(`[Inbox] conversations loaded: ${convs.length} total. Per-conversation unread:`,
-          convs.map(c => `${c.farmstand_id?.slice(0, 8) ?? '?'}:${c.unread_count ?? 0}`).join(', '));
+        const rows = await res.json() as ConversationRow[];
+        if (__DEV__) console.log('[Inbox] inbox conversation count:', rows.length, 'from public.conversations');
+        const convs: Conversation[] = rows.map(row => {
+          const viewerIsOwner = row.owner_id === user.id;
+          const otherUserId = viewerIsOwner ? row.customer_id : row.owner_id;
+          const unreadCount = viewerIsOwner
+            ? (row.owner_unread_count ?? 0)
+            : (row.customer_unread_count ?? 0);
+          const fs = row.farmstands;
+          const farmstandPhoto = fs?.photos?.[0] ?? fs?.photo_url ?? null;
+          return {
+            farmstand_id: row.farmstand_id,
+            other_user_id: otherUserId,
+            last_message_text: row.last_message_text,
+            last_message_at: row.last_message_at,
+            farmstand_name: fs?.name ?? undefined,
+            farmstand_photo_url: farmstandPhoto,
+            farmstand_deleted: !!(fs?.deleted_at),
+            unread_count: unreadCount,
+            viewer_is_owner: viewerIsOwner,
+          };
+        });
 
         // Always read from the ref — not from the closure — so even a stale callback
         // (e.g. the one captured inside handleDeleteConfirm before state updated) uses
@@ -666,10 +713,11 @@ export default function InboxScreen() {
           setTotalUnreadMessages(0);
         }
       } else {
-        console.log('[Inbox] messages/inbox fetch error:', res.status, text.slice(0, 200));
+        const errText = await res.text();
+        if (__DEV__) console.log('[Inbox] conversations fetch error:', res.status, errText.slice(0, 200));
       }
     } catch (err) {
-      console.log('[Inbox] conversations fetch exception:', err instanceof Error ? err.message : String(err));
+      if (__DEV__) console.log('[Inbox] conversations fetch exception:', err instanceof Error ? err.message : String(err));
     } finally {
       if (!silent) setConvLoading(false);
     }

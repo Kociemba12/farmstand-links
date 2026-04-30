@@ -20,11 +20,14 @@ import { ChevronLeft, Clock, CheckCircle, Star, ImagePlus, X } from 'lucide-reac
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
-import { getValidSession } from '@/lib/supabase';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import { uploadToSupabaseStorage } from '@/lib/supabase';
+import { useUserStore } from '@/lib/user-store';
 import {
   SupportTicket,
   SupportMessage,
   TicketStatus,
+  SUPPORT_BUCKET,
   fetchSupportTicket,
   fetchTicketMessages,
   sendTicketMessage,
@@ -35,7 +38,6 @@ import { useSupportUnreadStore } from '@/lib/support-unread-store';
 // ── Constants ────────────────────────────────────────────────────────────────
 const CREAM = '#FDF8F3';
 const FOREST = '#2D5A3D';
-const BACKEND_URL = (process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL ?? '').replace(/\/$/, '');
 const MAX_PHOTOS = 5;
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -87,24 +89,34 @@ function formatTimestamp(dateStr: string): string {
   return `${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} at ${timeStr}`;
 }
 
-async function uploadPhoto(uri: string, mimeType: string, token: string): Promise<string> {
-  const ext = mimeType.split('/')[1] ?? 'jpg';
-  const filename = `support-reply-${Date.now()}.${ext}`;
-  const formData = new FormData();
-  formData.append('file', { uri, type: mimeType, name: filename } as unknown as Blob);
-  const resp = await fetch(`${BACKEND_URL}/api/upload`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    body: formData,
-  });
-  const stct = resp.headers.get('content-type') ?? '';
-  if (!stct.includes('application/json')) {
-    console.log('[SupportThread] upload non-JSON response (HTTP', resp.status, '), content-type:', stct);
-    throw new Error(`Unexpected response from server (HTTP ${resp.status})`);
+// Converts photo to JPEG and uploads to Supabase Storage.
+// Uses the same bucket (support-screenshots) as support ticket submission photos.
+async function uploadSupportPhoto(
+  uri: string,
+  ticketId: string,
+  index: number,
+  userId: string,
+): Promise<string> {
+  if (__DEV__) console.log('[SupportThread] uploadSupportPhoto — uri:', uri.slice(0, 80), '| ticketId:', ticketId, '| index:', index, '| bucket:', SUPPORT_BUCKET);
+
+  // Convert to JPEG to handle HEIC/HEIF and normalize format (same pattern as claim photos)
+  const compressed = await manipulateAsync(
+    uri,
+    [{ resize: { width: 1600 } }],
+    { compress: 0.82, format: SaveFormat.JPEG },
+  );
+  if (__DEV__) console.log('[SupportThread] uploadSupportPhoto — converted:', compressed.width, 'x', compressed.height, '| uri:', compressed.uri.slice(0, 80));
+
+  const storagePath = `support-ticket-attachments/${userId}/${ticketId}/${Date.now()}-${index}.jpg`;
+  if (__DEV__) console.log('[SupportThread] uploadSupportPhoto — storagePath:', storagePath);
+
+  const { url, error } = await uploadToSupabaseStorage(SUPPORT_BUCKET, storagePath, compressed.uri, 'image/jpeg');
+  if (__DEV__) {
+    console.log('[SupportThread] uploadSupportPhoto — error:', error?.message ?? 'none');
+    console.log('[SupportThread] uploadSupportPhoto — url:', url ?? 'none');
   }
-  const data = (await resp.json()) as { success: boolean; data?: { url: string }; error?: string };
-  if (!resp.ok || !data.success || !data.data?.url) throw new Error(data.error ?? 'Upload failed');
-  return data.data.url;
+  if (error || !url) throw error ?? new Error('Upload returned no URL');
+  return url;
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -220,6 +232,7 @@ export default function SupportThreadScreen() {
   const [isUploading, setIsUploading] = useState(false);
 
   const fetchUnreadCount = useSupportUnreadStore(s => s.fetchUnreadCount);
+  const markTicketReadInStore = useSupportUnreadStore(s => s.markTicketRead);
 
   const loadData = useCallback(async () => {
     if (!ticketId) return;
@@ -231,14 +244,16 @@ export default function SupportThreadScreen() {
       ]);
       setTicket(ticketData);
       setMessages(messagesData);
+      // Optimistically clear badge before server round-trip
+      markTicketReadInStore(ticketId);
       await markSupportTicketRead(ticketId);
       void fetchUnreadCount();
     } catch (err) {
-      console.error('[thread] Load error:', err);
+      if (__DEV__) console.warn('[thread] Load error:', err);
     } finally {
       setIsLoading(false);
     }
-  }, [ticketId, fetchUnreadCount]);
+  }, [ticketId, fetchUnreadCount, markTicketReadInStore]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -318,15 +333,21 @@ export default function SupportThreadScreen() {
       let uploadedUrls: string[] | null = null;
       if (photos.length > 0) {
         setIsUploading(true);
-        const session = await getValidSession();
-        if (!session?.access_token) throw new Error('Not authenticated');
+        const userId = useUserStore.getState().user?.id ?? '';
+        if (__DEV__) console.log('[SupportThread] uploading', photos.length, 'photo(s) — ticketId:', ticketId, '| userId:', userId || '(unknown)');
 
         const results = await Promise.allSettled(
-          photos.map(p => uploadPhoto(p.uri, p.mime, session.access_token))
+          photos.map((p, index) => uploadSupportPhoto(p.uri, ticketId, index, userId))
         );
         uploadedUrls = results
           .filter((r): r is PromiseFulfilledResult<string> => r.status === 'fulfilled')
           .map(r => r.value);
+
+        if (__DEV__) {
+          results.forEach((r, i) => {
+            if (r.status === 'rejected') console.warn('[SupportThread] photo', i, 'upload failed:', (r as PromiseRejectedResult).reason);
+          });
+        }
 
         if (uploadedUrls.length === 0 && photos.length > 0) {
           Alert.alert('Upload Failed', 'Could not upload photos. Please try again.');
@@ -353,7 +374,7 @@ export default function SupportThreadScreen() {
       const updated = await fetchSupportTicket(ticketId);
       setTicket(updated);
     } catch (err) {
-      console.error('[thread] Send error:', err);
+      if (__DEV__) console.warn('[thread] Send error:', err);
       Alert.alert('Error', 'Could not send message. Please try again.');
     } finally {
       setIsSending(false);

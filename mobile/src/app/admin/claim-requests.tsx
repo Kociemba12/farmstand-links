@@ -858,88 +858,108 @@ function AdminClaimRequestsContent() {
   // Falls back to Supabase RPC, then direct table query
   const loadClaimRequests = useCallback(async () => {
     try {
-      console.log('[ClaimRequests] Loading pending claims via backend API...');
-
       const session = await getValidSession();
       const backendUrl = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
 
-      // Primary: backend endpoint uses service role key — no RLS, no JWT email-claim issues
+      if (__DEV__) console.log('[ClaimRequests] loadClaimRequests — backendUrl:', backendUrl || '(not configured)');
+
+      // Primary: backend endpoint — wrapped in its own try/catch so network errors fall through to Supabase fallback
       if (session?.access_token && backendUrl) {
-        const resp = await fetch(`${backendUrl}/api/admin/pending-claims`, {
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            'Content-Type': 'application/json',
-          },
-        });
+        try {
+          if (__DEV__) console.log('[ClaimRequests] Loading pending claims via backend API:', `${backendUrl}/api/admin/pending-claims`);
+          const resp = await fetch(`${backendUrl}/api/admin/pending-claims`, {
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+              'Content-Type': 'application/json',
+            },
+          });
 
-        console.log('[ClaimRequests] backend API status:', resp.status);
+          console.log('[ClaimRequests] backend API status:', resp.status);
 
-        const crct3 = resp.headers.get('content-type') ?? '';
-        if (resp.ok && crct3.includes('application/json')) {
-          const json = await resp.json() as { success: boolean; claims: Record<string, unknown>[] };
-          const count = json.claims?.length ?? 0;
-          console.log('[ClaimRequests] backend API result: count=', count);
-          if (json.success && json.claims) {
-            json.claims.forEach((row) => {
-              console.log(`[ClaimRequests] claim id=${row.id} farmstand_id=${row.farmstand_id} farmstand_name=${row.farmstand_name ?? 'n/a'} status=${row.status}`);
-            });
-            setPendingRequests(json.claims.map((row) => ({
-              id: row.id as string,
-              farmstand_id: row.farmstand_id as string,
-              requester_id: (row.requester_id as string | null) || (row.user_id as string | null),
-              requester_email: (row.requester_email as string) || '',
-              requester_name: (row.requester_name as string) || '',
-              notes: (row.notes as string | null) || null,
-              evidence_urls: (row.evidence_urls as string[]) || [],
-              status: (row.status as 'pending' | 'approved' | 'denied' | 'needs_more_info') || 'pending',
-              reviewed_at: row.reviewed_at as string | null,
-              reviewed_by: (row.reviewed_by as string | null) || null,
-              admin_message: (row.admin_message as string | null) || null,
-              created_at: row.created_at as string,
-              farmstand_name: (row.farmstand_name as string | null) || null,
-            })));
-            return;
+          const crct3 = resp.headers.get('content-type') ?? '';
+          if (resp.ok && crct3.includes('application/json')) {
+            const json = await resp.json() as { success: boolean; claims: Record<string, unknown>[] };
+            const count = json.claims?.length ?? 0;
+            const statusSummary = json.claims?.map(r => r.status).join(', ') || 'none';
+            console.log('[ClaimRequests] backend API result: count=', count, '| statuses:', statusSummary);
+            if (json.success && json.claims) {
+              json.claims.forEach((row) => {
+                console.log(`[ClaimRequests] claim id=${row.id} farmstand_id=${row.farmstand_id} farmstand_name=${row.farmstand_name ?? 'n/a'} status=${row.status}`);
+              });
+              const mapped = json.claims.map((row) => ({
+                id: row.id as string,
+                farmstand_id: row.farmstand_id as string,
+                requester_id: (row.requester_id as string | null) || (row.user_id as string | null),
+                requester_email: (row.requester_email as string) || '',
+                requester_name: (row.requester_name as string) || '',
+                notes: (row.notes as string | null) || null,
+                evidence_urls: (row.evidence_urls as string[]) || [],
+                status: (row.status as 'pending' | 'approved' | 'denied' | 'needs_more_info') || 'pending',
+                reviewed_at: row.reviewed_at as string | null,
+                reviewed_by: (row.reviewed_by as string | null) || null,
+                admin_message: (row.admin_message as string | null) || null,
+                created_at: row.created_at as string,
+                farmstand_name: (row.farmstand_name as string | null) || null,
+              }));
+              if (__DEV__) console.log('[ClaimRequests] backend mapped rows:', mapped.length, '| first:', mapped[0] ? `id=${mapped[0].id} status=${mapped[0].status}` : 'none');
+              setPendingRequests(mapped);
+              return;
+            }
+          } else {
+            const errText = await resp.text();
+            if (__DEV__) console.warn('[ClaimRequests] backend API error:', resp.status, errText.slice(0, 200));
           }
-        } else {
-          const errText = await resp.text();
-          console.log('[ClaimRequests] backend API error:', resp.status, errText);
+        } catch (backendErr) {
+          if (__DEV__) console.warn('[ClaimRequests] backend fetch exception (falling back to Supabase):', backendErr);
         }
       }
 
-      // Fallback: direct table query (may be filtered by RLS)
-      console.log('[ClaimRequests] Falling back to direct table query...');
+      // Fallback: authenticated Supabase direct query — same pattern as dashboard count
+      console.log('[ClaimRequests] Using authenticated Supabase fallback...');
       const { data, error } = await supabase
         .from<Record<string, unknown>>('claim_requests')
         .select('*')
-        .eq('status', 'pending')
+        .in('status', ['pending', 'needs_more_info'])
+        .requireAuth()
         .order('created_at', { ascending: false })
         .execute();
 
-      console.log('[ClaimRequests] direct fetch result:', { count: data?.length, error: error?.message });
+      console.log('[ClaimRequests] Supabase fallback raw row count:', data?.length ?? 0, '| error:', error?.message ?? 'none');
 
       if (error) {
-        console.log('[ClaimRequests] direct fetch error:', error.message);
+        if (__DEV__) console.warn('[ClaimRequests] Supabase fallback error:', error.message);
+        setPendingRequests([]);
         return;
       }
 
-      if (data) {
-        setPendingRequests(data.map((row: Record<string, unknown>) => ({
-          id: row.id as string,
-          farmstand_id: row.farmstand_id as string,
-          requester_id: (row.requester_id as string | null) || (row.user_id as string | null),
-          requester_email: (row.requester_email as string) || '',
-          requester_name: (row.requester_name as string) || '',
-          notes: (row.additional_notes as string | null) || (row.notes as string | null) || (row.message as string | null) || null,
-          evidence_urls: (row.evidence_urls as string[]) || [],
-          status: (row.status as 'pending' | 'approved' | 'denied' | 'needs_more_info') || 'pending',
-          reviewed_at: row.reviewed_at as string | null,
-          reviewed_by: (row.reviewed_by as string | null) || null,
-          admin_message: (row.admin_message as string | null) || null,
-          created_at: row.created_at as string,
-        })));
+      const rows = data ?? [];
+      const mapped = rows.map((row: Record<string, unknown>) => ({
+        id: row.id as string,
+        farmstand_id: row.farmstand_id as string,
+        requester_id: (row.requester_id as string | null) || (row.user_id as string | null),
+        requester_email: (row.requester_email as string) || '',
+        requester_name: (row.requester_name as string) || '',
+        notes: (row.additional_notes as string | null) || (row.notes as string | null) || (row.message as string | null) || null,
+        evidence_urls: (row.evidence_urls as string[]) || [],
+        status: (row.status as 'pending' | 'approved' | 'denied' | 'needs_more_info') || 'pending',
+        reviewed_at: row.reviewed_at as string | null,
+        reviewed_by: (row.reviewed_by as string | null) || null,
+        admin_message: (row.admin_message as string | null) || null,
+        created_at: row.created_at as string,
+        farmstand_name: null,
+      }));
+
+      if (__DEV__) {
+        console.log('[ClaimRequests] Supabase fallback mapped rows:', mapped.length);
+        if (mapped.length > 0) {
+          console.log('[ClaimRequests] Supabase fallback first row — id:', mapped[0].id, '| status:', mapped[0].status, '| farmstand_id:', mapped[0].farmstand_id);
+        }
       }
+
+      setPendingRequests(mapped);
+      console.log('[ClaimRequests] pendingRequests set to', mapped.length, 'rows');
     } catch (err) {
-      console.error('[ClaimRequests] loadClaimRequests exception:', err);
+      if (__DEV__) console.warn('[ClaimRequests] loadClaimRequests exception:', err);
       setPendingRequests([]);
     } finally {
       setIsLoadingRequests(false);
@@ -986,12 +1006,15 @@ function AdminClaimRequestsContent() {
         return;
       }
 
+      if (__DEV__) console.log('[ClaimRequests] approve_claim RPC — claim_id:', request.id, '| claimant user_id:', request.requester_id ?? 'MISSING', '| farmstand_id:', request.farmstand_id);
+
       // Use the approve_claim RPC which does a clean UPDATE by PK — no constraint issues
       const { data, error } = await supabase.rpc<{ success: boolean; error?: string }>(
         'approve_claim',
         { p_claim_id: request.id }
       );
 
+      if (__DEV__) console.log('[ClaimRequests] approve_claim RPC result — data:', JSON.stringify(data), '| error:', error?.message ?? null);
       console.log('[ClaimRequests] approve_claim RPC result:', { data, error });
 
       if (error) {
@@ -1070,10 +1093,16 @@ function AdminClaimRequestsContent() {
     setIsSubmitting(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // Capture refs before any async work so they stay stable in finally/catch
+    // Capture before async work so refs stay stable in finally/catch
     const denyingRequest = selectedRequest;
+    const denialReason = modalText.trim() || null;
 
-    // OPTIMISTIC: clear ownership immediately so the claimant's screens update
+    if (__DEV__) {
+      console.log('[ClaimRequests] handleSubmitDeny — claim id:', denyingRequest.id);
+      console.log('[ClaimRequests] handleSubmitDeny — denial reason:', denialReason ?? '(none)');
+    }
+
+    // Optimistic: clear ownership immediately so claimant screens update
     applyClaimOverride(denyingRequest.farmstand_id, {
       claimStatus: 'unclaimed',
       ownerId: null,
@@ -1081,11 +1110,9 @@ function AdminClaimRequestsContent() {
       claimedAt: null,
       userClaimRequestStatus: 'none',
     });
-    console.log('[ClaimRequests] optimistic deny applied for farmstand', denyingRequest.farmstand_id);
 
     try {
       const session = await getValidSession();
-      console.log('[ClaimRequests] handleSubmitDeny session:', session ? `ok token=...${session.access_token.slice(-8)}` : 'MISSING');
       if (!session?.access_token) {
         clearClaimOverride(denyingRequest.farmstand_id);
         Alert.alert('Session Missing', 'Your session has expired. Please sign out and sign in again.');
@@ -1093,42 +1120,74 @@ function AdminClaimRequestsContent() {
       }
 
       const backendUrl = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
-      const requestBody = {
-        claim_id: denyingRequest.id,
-        ...(modalText.trim() ? { admin_message: modalText.trim() } : {}),
-      };
-      console.log('[ClaimRequests] handleSubmitDeny payload:', JSON.stringify(requestBody));
+      let denied = false;
 
-      const resp = await fetch(`${backendUrl}/api/admin/deny-claim`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody),
-      });
-
-      console.log('[ClaimRequests] handleSubmitDeny response status:', resp.status);
-      const crct4 = resp.headers.get('content-type') ?? '';
-      if (!crct4.includes('application/json')) {
-        console.log('[ClaimRequests] deny-claim non-JSON response (HTTP', resp.status, '), content-type:', crct4);
-        showToast('Failed to deny claim. Please try again.', 'error');
-        return;
+      // Primary: backend API — wrapped in its own try/catch so network errors fall through
+      if (backendUrl) {
+        try {
+          if (__DEV__) console.log('[ClaimRequests] deny — backend URL:', `${backendUrl}/api/admin/deny-claim`);
+          const requestBody = {
+            claim_id: denyingRequest.id,
+            ...(denialReason ? { admin_message: denialReason } : {}),
+          };
+          const resp = await fetch(`${backendUrl}/api/admin/deny-claim`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(requestBody),
+          });
+          if (__DEV__) console.log('[ClaimRequests] deny backend response status:', resp.status);
+          const crct4 = resp.headers.get('content-type') ?? '';
+          if (resp.ok && crct4.includes('application/json')) {
+            const json = await resp.json() as { success: boolean; error?: string };
+            if (__DEV__) console.log('[ClaimRequests] deny backend response body:', JSON.stringify(json));
+            if (json.success) {
+              denied = true;
+            } else {
+              if (__DEV__) console.warn('[ClaimRequests] deny backend returned failure:', json.error);
+            }
+          } else {
+            if (__DEV__) console.warn('[ClaimRequests] deny backend non-JSON or error status:', resp.status);
+          }
+        } catch (backendErr) {
+          if (__DEV__) console.warn('[ClaimRequests] deny backend exception (falling back to Supabase):', backendErr);
+        }
+      } else {
+        if (__DEV__) console.log('[ClaimRequests] deny — no BACKEND_URL configured, using Supabase directly');
       }
-      const json = await resp.json() as { success: boolean; error?: string };
-      console.log('[ClaimRequests] handleSubmitDeny response body:', JSON.stringify(json));
 
-      if (!resp.ok || !json.success) {
-        const errMsg = json.error || `Server error ${resp.status}`;
-        console.log('[ClaimRequests] handleSubmitDeny failed:', errMsg);
-        clearClaimOverride(denyingRequest.farmstand_id);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        showToast('Failed to deny claim. Please try again.', 'error');
-        return;
+      // Fallback: authenticated Supabase direct update
+      if (!denied) {
+        if (__DEV__) console.log('[ClaimRequests] deny — using Supabase fallback for claim id:', denyingRequest.id);
+        const now = new Date().toISOString();
+        const { data: updateData, error: updateError } = await supabase
+          .from<Record<string, unknown>>('claim_requests')
+          .update({
+            status: 'denied',
+            admin_message: denialReason,
+            reviewed_at: now,
+            reviewed_by_admin_id: user.id,
+          })
+          .eq('id', denyingRequest.id)
+          .execute();
+        if (__DEV__) {
+          console.log('[ClaimRequests] deny Supabase update error:', updateError?.message ?? 'none');
+          console.log('[ClaimRequests] deny Supabase update data:', JSON.stringify(updateData));
+        }
+        if (updateError) {
+          if (__DEV__) console.warn('[ClaimRequests] deny Supabase update failed:', updateError.message);
+          clearClaimOverride(denyingRequest.farmstand_id);
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          showToast('Failed to deny claim. Please try again.', 'error');
+          return;
+        }
+        denied = true;
       }
 
-      // Success path
-      console.log('[ClaimRequests] handleSubmitDeny success — closing modal');
+      // Success
+      if (__DEV__) console.log('[ClaimRequests] deny success — removing from list and closing modal');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setShowDenyModal(false);
       setSelectedRequest(null);
@@ -1140,22 +1199,19 @@ function AdminClaimRequestsContent() {
         if (denyingRequest.requester_id) logClaimDenied(denyingRequest.farmstand_id, denyingRequest.requester_id);
       } catch {}
 
-      // Invalidate map cache and refresh farmstand state
       await AsyncStorage.removeItem(MAP_FARMSTANDS_CACHE_KEY).catch(() => {});
       await refreshSingleFarmstand(denyingRequest.farmstand_id)
         .then(() => {
           clearClaimOverride(denyingRequest.farmstand_id);
-          console.log('[ClaimRequests] farmstand state refreshed after deny', denyingRequest.farmstand_id);
         })
         .catch(() => {});
       await Promise.all([loadAdminData(), loadClaimRequests()]);
     } catch (e: unknown) {
-      console.log('[ClaimRequests] handleSubmitDeny exception:', e instanceof Error ? e.message : String(e));
+      if (__DEV__) console.warn('[ClaimRequests] handleSubmitDeny exception:', e instanceof Error ? e.message : String(e));
       clearClaimOverride(denyingRequest.farmstand_id);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       showToast('Failed to deny claim. Please try again.', 'error');
     } finally {
-      console.log('[ClaimRequests] handleSubmitDeny finally — clearing isSubmitting');
       setIsSubmitting(false);
     }
   };
@@ -1175,78 +1231,101 @@ function AdminClaimRequestsContent() {
     setInfoModalError(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
+    const infoRequest = selectedRequest;
+    const infoMessage = modalText.trim();
+
     try {
       const session = await getValidSession();
-      console.log('[RequestInfo] submit — claim_id=', selectedRequest.id, 'has_session=', !!session?.access_token);
+      console.log('[RequestInfo] submit — claim_id=', infoRequest.id, 'has_session=', !!session?.access_token);
       if (!session?.access_token) {
         setInfoModalError('Session expired. Please close this screen, sign out, and sign back in.');
         return;
       }
 
       const backendUrl = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
-      console.log('[RequestInfo] posting to', `${backendUrl}/api/admin/request-more-info`);
+      let infoSent = false;
 
-      let resp: Response;
-      try {
-        resp = await fetch(`${backendUrl}/api/admin/request-more-info`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            claim_id: selectedRequest.id,
-            admin_message: modalText.trim(),
-          }),
-        });
-      } catch (fetchErr) {
-        console.error('[RequestInfo] fetch error:', fetchErr);
-        setInfoModalError('Network error. Check your connection and try again.');
-        return;
+      // Primary: backend API — wrapped in its own try/catch so network errors fall through
+      if (backendUrl) {
+        try {
+          if (__DEV__) console.log('[RequestInfo] posting to', `${backendUrl}/api/admin/request-more-info`);
+          const resp = await fetch(`${backendUrl}/api/admin/request-more-info`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              claim_id: infoRequest.id,
+              admin_message: infoMessage,
+            }),
+          });
+          if (__DEV__) console.log('[RequestInfo] backend response status:', resp.status);
+          const crct = resp.headers.get('content-type') ?? '';
+          if (resp.ok && crct.includes('application/json')) {
+            const json = await resp.json() as { success: boolean; error?: string };
+            if (__DEV__) console.log('[RequestInfo] backend response body:', JSON.stringify(json));
+            if (json.success) {
+              infoSent = true;
+            } else {
+              if (__DEV__) console.warn('[RequestInfo] backend returned failure:', json.error);
+            }
+          } else {
+            if (__DEV__) console.warn('[RequestInfo] backend non-JSON or error status:', resp.status);
+          }
+        } catch (fetchErr) {
+          if (__DEV__) console.warn('[RequestInfo] backend fetch exception (falling back to Supabase):', fetchErr);
+        }
+      } else {
+        if (__DEV__) console.log('[RequestInfo] no BACKEND_URL configured, using Supabase directly');
       }
 
-      console.log('[RequestInfo] response status:', resp.status);
-
-      let json: { success: boolean; error?: string };
-      try {
-        json = await resp.json() as { success: boolean; error?: string };
-      } catch {
-        console.error('[RequestInfo] response was not JSON (status:', resp.status, ')');
-        setInfoModalError(`Server error (${resp.status}). Please try again.`);
-        return;
-      }
-
-      console.log('[RequestInfo] response body:', JSON.stringify(json));
-
-      if (!resp.ok || !json.success) {
-        const errMsg = json.error || `Server error ${resp.status}`;
-        console.error('[RequestInfo] backend returned failure:', errMsg);
-        setInfoModalError(errMsg);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        return;
+      // Fallback: authenticated Supabase direct update
+      if (!infoSent) {
+        if (__DEV__) console.log('[RequestInfo] using Supabase fallback for claim id:', infoRequest.id);
+        const { data: updateData, error: updateError } = await supabase
+          .from<Record<string, unknown>>('claim_requests')
+          .update({
+            status: 'needs_more_info',
+            admin_message: infoMessage,
+            reviewed_at: new Date().toISOString(),
+          })
+          .eq('id', infoRequest.id)
+          .select('id,status,admin_message')
+          .requireAuth()
+          .execute();
+        if (__DEV__) {
+          console.log('[RequestInfo] Supabase update error:', updateError?.message ?? 'none');
+          console.log('[RequestInfo] Supabase update data:', JSON.stringify(updateData));
+        }
+        if (updateError) {
+          if (__DEV__) console.warn('[RequestInfo] Supabase update failed:', updateError.message);
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setInfoModalError(updateError.message || 'Failed to send request. Please try again.');
+          return;
+        }
+        infoSent = true;
       }
 
       // Success
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      const doneRequest = selectedRequest;
-      const doneMessage = modalText.trim();
+      if (__DEV__) console.log('[RequestInfo] info request sent successfully');
       const now = new Date().toISOString();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setShowInfoModal(false);
       setSelectedRequest(null);
       setModalText('');
       setInfoModalError(null);
-      // Optimistically update admin_message in local list — keep status as-is
       setPendingRequests((prev) =>
         prev.map((r) =>
-          r.id === doneRequest.id
-            ? { ...r, admin_message: doneMessage, reviewed_at: now }
+          r.id === infoRequest.id
+            ? { ...r, status: 'needs_more_info', admin_message: infoMessage, reviewed_at: now }
             : r
         )
       );
       showToast('Request sent', 'success');
       loadClaimRequests().catch(() => {});
     } catch (e: unknown) {
-      console.error('[RequestInfo] unexpected exception:', e instanceof Error ? e.message : String(e));
+      if (__DEV__) console.warn('[RequestInfo] unexpected exception:', e instanceof Error ? e.message : String(e));
       setInfoModalError('Something went wrong. Please try again.');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {

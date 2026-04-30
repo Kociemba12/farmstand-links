@@ -176,9 +176,9 @@ function SkeletonSection({ variant = 'large' }: { variant?: 'large' | 'small' })
     ? Math.round(width * (variant === 'large' ? 0.52 : 0.46))
     : (variant === 'large' ? CARD_WIDTH : SMALL_CARD_WIDTH);
   return (
-    <View style={{ marginTop: 24 }}>
+    <View style={{ marginTop: 18 }}>
       {/* Section header skeleton */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, marginBottom: 12 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, marginBottom: 10 }}>
         <View style={{ width: 140, height: 20, borderRadius: 8, backgroundColor: '#E8DDD4' }} />
       </View>
       <ScrollView
@@ -460,7 +460,7 @@ function SectionHeader({ title, onShowAll, showAllLabel = 'Show all', radiusMile
   const { width: w } = useWindowDimensions();
   const padH = w >= 768 ? 28 : 20;
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: padH, marginBottom: 12 }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: padH, marginBottom: 10 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
         <Text className="text-charcoal font-bold text-lg">{title}</Text>
       </View>
@@ -1261,7 +1261,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
 
         {/* Top Spots For You - Only renders REAL farmstands, no placeholders/duplicates */}
         {topSpots.length > 0 && (
-          <Animated.View className="mt-6">
+          <Animated.View className="mt-4">
             <SectionHeader
               title="Top Spots For You"
               onShowAll={topSpots.length > 1 ? () => handleShowAll('top') : undefined}
@@ -1283,7 +1283,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
 
         {/* Baked Goods Near You */}
         {bakedGoods.length > 0 && (
-          <Animated.View entering={FadeInDown.delay(500).duration(400)} className="mt-6">
+          <Animated.View entering={FadeInDown.delay(500).duration(400)} className="mt-4">
             <SectionHeader
               title="Baked Goods Near You"
               onShowAll={() => handleCategoryPress('baked_goods', 'Baked Goods')}
@@ -1307,7 +1307,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
 
         {/* Egg Stands Near You */}
         {eggStands.length > 0 && (
-          <Animated.View entering={FadeInDown.delay(600).duration(400)} className="mt-6">
+          <Animated.View entering={FadeInDown.delay(600).duration(400)} className="mt-4">
             <SectionHeader
               title="Egg Stands Near You"
               onShowAll={() => handleCategoryPress('eggs', 'Fresh Eggs')}
@@ -1331,7 +1331,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
 
         {/* Seasonal Stands */}
         {seasonalStands.length > 0 && (
-          <Animated.View entering={FadeInDown.delay(700).duration(400)} className="mt-6">
+          <Animated.View entering={FadeInDown.delay(700).duration(400)} className="mt-4">
             <SectionHeader
               title="Seasonal Stands"
               onShowAll={() => handleCategoryPress('seasonal', 'Seasonal')}
@@ -1355,7 +1355,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
 
         {/* New This Week */}
         {newThisWeek.length > 0 && (
-          <Animated.View entering={FadeInDown.delay(800).duration(400)} className="mt-6">
+          <Animated.View entering={FadeInDown.delay(800).duration(400)} className="mt-4">
             <SectionHeader
               title="New This Week"
               onShowAll={() => handleShowAll('new')}
@@ -1378,7 +1378,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
 
         {/* Most Saved */}
         {mostSaved.length > 0 && (
-          <Animated.View entering={FadeInDown.delay(900).duration(400)} className="mt-6">
+          <Animated.View entering={FadeInDown.delay(900).duration(400)} className="mt-4">
             <SectionHeader
               title="Most Saved"
               onShowAll={() => handleShowAll('saved')}
@@ -1401,7 +1401,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
 
         {/* Open Now */}
         {openNow.length > 0 && (
-          <Animated.View entering={FadeInDown.delay(1000).duration(400)} className="mt-6">
+          <Animated.View entering={FadeInDown.delay(1000).duration(400)} className="mt-4">
             <SectionHeader
               title="Open Now"
               onShowAll={() => handleShowAll('open')}

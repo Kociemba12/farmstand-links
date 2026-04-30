@@ -288,6 +288,31 @@ approveClaimPushRouter.post("/", async (c) => {
     timestamp: new Date().toISOString(),
   };
 
+  // 0. Ensure farmstand_owners row exists for the new owner.
+  // bootstrap-store.ts queries farmstand_owners exclusively for My Farmstand —
+  // it never reads farmstands.owner_id. The approve_claim RPC should insert this
+  // row, but we upsert here too as a belt-and-suspenders using the service role key.
+  try {
+    const ownerUpsertResp = await fetch(`${SUPABASE_URL}/rest/v1/farmstand_owners`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=ignore-duplicates,return=minimal",
+      },
+      body: JSON.stringify({ user_id, farmstand_id }),
+    });
+    if (ownerUpsertResp.ok || ownerUpsertResp.status === 409) {
+      console.log(`[ApproveClaimPush] farmstand_owners row ensured for user=${user_id} farmstand=${farmstand_id}`);
+    } else {
+      const errText = await ownerUpsertResp.text();
+      console.log(`[ApproveClaimPush] farmstand_owners upsert non-fatal: ${ownerUpsertResp.status} ${errText.slice(0, 120)}`);
+    }
+  } catch (ownerErr) {
+    console.log(`[ApproveClaimPush] farmstand_owners upsert exception (non-fatal):`, ownerErr);
+  }
+
   // 1. Insert inbox_alert — only columns that exist in the live table
   // NOTE: This DB write happens BEFORE the push send. If it is slow, it delays delivery.
   const alertInsertStart = Date.now();

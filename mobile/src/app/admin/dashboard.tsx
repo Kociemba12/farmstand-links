@@ -21,7 +21,7 @@ import { AdminGuard } from '@/components/AdminGuard';
 import { useAdminStore } from '@/lib/admin-store';
 import { useUserStore } from '@/lib/user-store';
 import { usePromotionsStore } from '@/lib/promotions-store';
-import { getValidSession } from '@/lib/supabase';
+import { getValidSession, supabase } from '@/lib/supabase';
 import * as Haptics from 'expo-haptics';
 
 // Background color constant
@@ -125,37 +125,60 @@ function AdminDashboardContent() {
   // Fetch awaiting-review ownership claim count via backend API (service role key, bypasses RLS)
   // Uses same endpoint as the Claim Requests screen so both show the same count
   const loadClaimRequestCount = useCallback(async () => {
+    const session = await getValidSession();
+    if (!session?.access_token) {
+      console.log('[Dashboard] loadClaimRequestCount: no session, skipping');
+      setClaimRequestCount(0);
+      return;
+    }
+
+    // Primary: backend API (requires EXPO_PUBLIC_VIBECODE_BACKEND_URL)
+    if (BACKEND_URL) {
+      try {
+        if (__DEV__) console.log('[Dashboard] loadClaimRequestCount — backend URL:', `${BACKEND_URL}/api/admin/pending-claims`);
+        const resp = await fetch(`${BACKEND_URL}/api/admin/pending-claims`, {
+          headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        });
+        if (resp.ok) {
+          const dct1 = resp.headers.get('content-type') ?? '';
+          if (dct1.includes('application/json')) {
+            const json = await resp.json() as { success: boolean; claims?: unknown[] };
+            if (json.success) {
+              const count = json.claims?.length ?? 0;
+              console.log('[Dashboard] Pending ownership claim count (backend):', count);
+              setClaimRequestCount(count);
+              return;
+            }
+          }
+        } else {
+          if (__DEV__) console.warn('[Dashboard] loadClaimRequestCount backend HTTP error:', resp.status);
+        }
+      } catch (err) {
+        if (__DEV__) console.warn('[Dashboard] loadClaimRequestCount backend exception:', err);
+      }
+    } else {
+      if (__DEV__) console.log('[Dashboard] loadClaimRequestCount: BACKEND_URL not configured — using Supabase directly');
+    }
+
+    // Fallback: authenticated Supabase query (bypasses backend, uses session token for RLS)
     try {
-      console.log('[Dashboard] Loading ownership claim count via backend API...');
-      const session = await getValidSession();
-      if (!session?.access_token) {
-        console.log('[Dashboard] loadClaimRequestCount: no session, skipping');
+      if (__DEV__) console.log('[Dashboard] loadClaimRequestCount — Supabase fallback');
+      const { data, error } = await supabase
+        .from<Record<string, unknown>>('claim_requests')
+        .select('id, status')
+        .in('status', ['pending', 'needs_more_info'])
+        .requireAuth()
+        .execute();
+      if (error) {
+        if (__DEV__) console.warn('[Dashboard] loadClaimRequestCount Supabase error:', error.message);
         setClaimRequestCount(0);
         return;
       }
-      const resp = await fetch(`${BACKEND_URL}/api/admin/pending-claims`, {
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-          'Content-Type': 'application/json',
-        },
-      });
-      if (!resp.ok) {
-        console.log('[Dashboard] loadClaimRequestCount backend error:', resp.status);
-        setClaimRequestCount(0);
-        return;
-      }
-      const dct1 = resp.headers.get('content-type') ?? '';
-      if (!dct1.includes('application/json')) {
-        console.log('[Dashboard] loadClaimRequestCount non-JSON response (HTTP', resp.status, '), content-type:', dct1);
-        setClaimRequestCount(0);
-        return;
-      }
-      const json = await resp.json() as { success: boolean; claims?: unknown[] };
-      const count = json.claims?.length ?? 0;
-      console.log('[Dashboard] Pending ownership claim count:', count);
+      const count = data?.length ?? 0;
+      if (__DEV__) console.log('[Dashboard] loadClaimRequestCount Supabase fallback count:', count);
       setClaimRequestCount(count);
     } catch (err) {
-      console.error('[Dashboard] loadClaimRequestCount exception:', err);
+      if (__DEV__) console.warn('[Dashboard] loadClaimRequestCount Supabase fallback exception:', err);
       setClaimRequestCount(0);
     }
   }, []);

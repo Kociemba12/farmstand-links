@@ -6,7 +6,6 @@ import {
   Pressable,
   TextInput,
   Alert,
-  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, Lock, Eye, EyeOff, Check, X } from 'lucide-react-native';
@@ -240,16 +239,35 @@ export default function ChangePasswordScreen() {
         <Pressable
           onPress={validateAndSave}
           disabled={isSaving || !canSubmit}
-          style={({ pressed }) => [
-            settingsStyles.primaryButton,
-            pressed && settingsStyles.primaryButtonPressed,
-            (!canSubmit || isSaving) && settingsStyles.primaryButtonDisabled,
-          ]}
+          style={{ alignSelf: 'center', marginTop: 24 }}
         >
-          {isSaving ? (
-            <ActivityIndicator color="#FFFFFF" />
-          ) : (
-            <Text style={settingsStyles.primaryButtonText}>Update Password</Text>
+          {({ pressed }) => (
+            <View
+              style={{
+                backgroundColor: (!canSubmit || isSaving)
+                  ? '#6F8F7A'
+                  : pressed
+                    ? '#245030'
+                    : '#2D5A3D',
+                paddingVertical: 16,
+                paddingHorizontal: 32,
+                borderRadius: 999,
+                minWidth: 220,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Text
+                style={{
+                  color: '#FFFFFF',
+                  fontSize: 16,
+                  fontWeight: '600',
+                  textAlign: 'center',
+                }}
+              >
+                {isSaving ? 'Updating...' : 'Update Password'}
+              </Text>
+            </View>
           )}
         </Pressable>
       </ScrollView>

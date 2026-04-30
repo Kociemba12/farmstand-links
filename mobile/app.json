@@ -15,10 +15,10 @@
       }
     },
     "ios": {
-      "supportsTablet": false,
+      "supportsTablet": true,
       "bundleIdentifier": "online.farmstand.app",
       "appleTeamId": "6W553F55SF",
-      "buildNumber": "168",
+      "buildNumber": "180",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Farmstand: Fresh and Local uses your location to display your position on in-app maps and surface nearby points of interest.",
         "NSCameraUsageDescription": "Farmstand: Fresh and Local uses the camera to capture photos inside the app before you publish them.",

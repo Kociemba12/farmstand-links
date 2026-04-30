@@ -8,6 +8,7 @@ import {
   Platform,
   KeyboardAvoidingView,
   ScrollView,
+  FlatList,
   ActivityIndicator,
   TouchableOpacity,
   AppState,
@@ -414,6 +415,7 @@ export default function ChatScreen() {
   }>();
   const router = useRouter();
   const scrollViewRef = useRef<ScrollView>(null);
+  const flatListRef = useRef<FlatList<RenderedItem>>(null);
 
   const user = useUserStore(s => s.user);
   const loadChatData = useChatStore(s => s.loadChatData);
@@ -587,10 +589,23 @@ export default function ChatScreen() {
   );
 
   const refreshDirectMessages = useCallback(async () => {
-    if (!isDirectMode || !user?.id || !farmstandId || !otherUserId) return;
+    if (!isDirectMode || !user?.id || !farmstandId || !otherUserId) {
+      if (__DEV__) console.log('[ThreadScreen] DIRECT THREAD OPEN FETCH skipped — isDirectMode:', isDirectMode, 'userId:', user?.id, 'farmstandId:', farmstandId, 'otherUserId:', otherUserId);
+      return;
+    }
+    if (__DEV__) console.log('[ThreadScreen] DIRECT THREAD OPEN FETCH — farmstandId:', farmstandId, 'currentUserId:', user.id, 'otherUserId:', otherUserId);
     setIsLoading(true);
+    setDirectMessages([]); // discard all previous / cached state before fetching
     const msgs = await loadDirectMessages(farmstandId, user.id, otherUserId);
-    setDirectMessages(msgs);
+    if (__DEV__) {
+      console.log('[ThreadScreen] DIRECT THREAD OPEN FETCH returned', msgs.length, 'messages');
+      if (msgs.length > 0) {
+        console.log('[ThreadScreen] first body:', msgs[0].body);
+        console.log('[ThreadScreen] latest body:', msgs[msgs.length - 1].body);
+      }
+      console.log('[ThreadScreen] message state replaced: true');
+    }
+    setDirectMessages(msgs); // full replace — no merging with old state
     setIsLoading(false);
   }, [isDirectMode, user?.id, farmstandId, otherUserId, loadDirectMessages]);
 
@@ -634,12 +649,22 @@ export default function ChatScreen() {
     }
   }, [isDirectMode, user?.id, farmstandId, otherUserId, loadDirectMessages, markConversationRead]);
 
+  // Fire on initial mount and whenever key params change (covers async user.id load).
+  // useFocusEffect alone is not enough because it only fires on focus events, not
+  // when deps change while the screen is already focused.
+  useEffect(() => {
+    if (!isDirectMode || !user?.id || !farmstandId || !otherUserId) return;
+    if (__DEV__) console.log('[ThreadScreen] mount/param direct refresh — farmstandId:', farmstandId, 'currentUserId:', user.id, 'otherUserId:', otherUserId);
+    refreshDirectMessages();
+  }, [isDirectMode, user?.id, farmstandId, otherUserId, refreshDirectMessages]);
+
+  // Fire on every screen re-focus (returning from another screen).
   useFocusEffect(
     useCallback(() => {
-      if (isDirectMode) {
-        refreshDirectMessages();
-      }
-    }, [isDirectMode, refreshDirectMessages])
+      if (!isDirectMode || !user?.id || !farmstandId || !otherUserId) return;
+      if (__DEV__) console.log('[ThreadScreen] focus direct refresh — farmstandId:', farmstandId, 'currentUserId:', user.id, 'otherUserId:', otherUserId);
+      refreshDirectMessages();
+    }, [isDirectMode, user?.id, farmstandId, otherUserId, refreshDirectMessages])
   );
 
   // Live-refresh: poll every 5 s + refresh on foreground + refresh on in-app push for this thread
@@ -727,44 +752,10 @@ export default function ChatScreen() {
     }
   }, [actualThreadId, user?.id, markThreadAsRead, threadMessages.length, isDirectMode]);
 
-  const messageCount = isDirectMode ? directMessages.length : threadMessages.length;
-
-  // Refs tracking whether the first bottom-snap has fired and the previous count.
-  const hasInitialScrolled = useRef(false);
-  const prevMessageCountRef = useRef(0);
-
-  // Scroll-to-bottom logic using useEffect + requestAnimationFrame.
-  //
-  // WHY NOT onContentSizeChange:
-  //   onContentSizeChange fires during the native layout pass. Calling scrollToEnd
-  //   inside it dispatches another native command mid-layout, which can produce a
-  //   "non-std C++ exception" native crash on iOS. requestAnimationFrame defers
-  //   the scroll until after the current frame is fully painted, making it safe.
-  //
-  // BEHAVIOUR:
-  //   - First time messages load → snap to bottom instantly (no animation) so
-  //     the user never sees the "scroll from oldest to newest" artifact.
-  //   - New messages while actively chatting → smooth animated scroll.
-  useEffect(() => {
-    if (messageCount === 0) return;
-    const frameId = requestAnimationFrame(() => {
-      if (!hasInitialScrolled.current) {
-        scrollViewRef.current?.scrollToEnd({ animated: false });
-        hasInitialScrolled.current = true;
-        prevMessageCountRef.current = messageCount;
-      } else if (messageCount > prevMessageCountRef.current) {
-        scrollViewRef.current?.scrollToEnd({ animated: true });
-        prevMessageCountRef.current = messageCount;
-      }
-    });
-    return () => cancelAnimationFrame(frameId);
-  }, [messageCount]);
-
-  const scrollToBottom = useCallback(() => {
-    scrollViewRef.current?.scrollToEnd({ animated: true });
-  }, []);
-
-  const msgItems = useMemo<MsgItem[]>(() => {
+  // Single source of truth for the rendered message list.
+  // In direct mode: exclusively directMessages (never thread store cache).
+  // In thread mode: legacy ChatMessage rows from the store.
+  const displayedMessages = useMemo<MsgItem[]>(() => {
     if (isDirectMode) {
       return directMessages.map(msg => ({
         id: msg.id,
@@ -772,23 +763,57 @@ export default function ChatScreen() {
         createdAt: msg.created_at,
         isOwn: msg.sender_id === user?.id,
       }));
-    } else {
-      return threadMessages.map((msg: ChatMessage) => ({
-        id: msg.id,
-        text: msg.text,
-        createdAt: msg.createdAt,
-        isOwn: msg.senderUserId === user?.id,
-      }));
     }
+    return threadMessages.map((msg: ChatMessage) => ({
+      id: msg.id,
+      text: msg.text,
+      createdAt: msg.createdAt,
+      isOwn: msg.senderUserId === user?.id,
+    }));
   }, [isDirectMode, directMessages, threadMessages, user?.id]);
 
-  const renderedItems = useMemo(() => buildRenderedItems(msgItems), [msgItems]);
-  const isEmpty = msgItems.length === 0;
+  const renderedItems = useMemo(() => buildRenderedItems(displayedMessages), [displayedMessages]);
+  const isEmpty = displayedMessages.length === 0;
+  const messageCount = displayedMessages.length;
   // Total group count used to compute reverse-stagger delays below
   const groupCount = useMemo(
     () => renderedItems.filter(r => r.kind === 'group').length,
     [renderedItems]
   );
+
+  const lastMessageRef = useRef<View>(null);
+
+  const scrollToBottom = useCallback((animated = true) => {
+    scrollViewRef.current?.scrollToEnd({ animated });
+  }, []);
+
+  // Render a single item inside the inverted FlatList (direct mode only).
+  // All items use delay=0 — the inverted list already shows newest content first.
+  const renderDirectItem = useCallback(({ item }: { item: RenderedItem }) => {
+    if (item.kind === 'timestamp') {
+      return <TimestampSeparator time={item.time} />;
+    }
+    return (
+      <MessageCard
+        isOwn={item.isOwn}
+        messages={item.messages}
+        contactName={displayName}
+        contactPhoto={displayPhoto}
+        delay={0}
+      />
+    );
+  }, [displayName, displayPhoto]);
+
+  // Non-direct mode: scroll to bottom when thread messages load.
+  useEffect(() => {
+    if (isDirectMode || displayedMessages.length === 0) return;
+    const frameId = requestAnimationFrame(() => scrollToBottom(false));
+    const timerId = setTimeout(() => scrollToBottom(false), 250);
+    return () => {
+      cancelAnimationFrame(frameId);
+      clearTimeout(timerId);
+    };
+  }, [isDirectMode, displayedMessages, scrollToBottom]);
 
   const handleSend = async () => {
     if (!messageText.trim() || !user?.id || farmstandDeleted) return;
@@ -831,6 +856,8 @@ export default function ChatScreen() {
         setDirectMessages(prev => [...prev, sent]);
         // Mark any prior incoming messages as read now that the user has replied
         markConversationRead(farmstandId, otherUserId);
+        // Silently refresh thread from server to pick up any concurrent incoming messages
+        pollDirectMessages();
         if (__DEV__) {
           setSendStatus({ ok: true, msg: `message insert success — id: ${sent.id}` });
           console.log('[DEBUG handleSend] INSERT SUCCESS row:', JSON.stringify(sent));
@@ -955,13 +982,25 @@ export default function ChatScreen() {
 
     setMessageText('');
     setIsSending(false);
-    scrollToBottom();
+    if (isDirectMode) {
+      flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
+    } else {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    }
   };
 
   const openFarmstand = () => {
     const fId = thread?.farmstandId ?? farmstandId;
     if (fId) router.push(`/farm/${fId}`);
   };
+
+  console.log('[ThreadScreen RENDER CHECK]', {
+    isDirectMode,
+    directMessagesLength: directMessages.length,
+    displayedMessagesLength: displayedMessages.length,
+    latestDirect: directMessages[directMessages.length - 1],
+    latestDisplayed: displayedMessages[displayedMessages.length - 1],
+  });
 
   // Track card indices for staggered animation
   let cardIndex = 0;
@@ -1020,66 +1059,99 @@ export default function ChatScreen() {
       </SafeAreaView>
 
       {/* Message list */}
-      <ScrollView
-        ref={scrollViewRef}
-        style={{ flex: 1 }}
-        contentContainerStyle={{
-          flexGrow: 1,
-          paddingHorizontal: 20,
-          paddingBottom: 16,
-        }}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="interactive"
-        maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 20 }}
-      >
-        {isLoading ? (
+      {isDirectMode ? (
+        isLoading ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
             <ActivityIndicator size="large" color="#4A7C59" />
           </View>
         ) : (
-          <>
-            {/* Farmstand context card — customers only */}
-            {canNavigateToFarmstand && (
-              <FarmstandContextCard
-                name={displayName}
-                photo={displayPhoto}
-                onPress={openFarmstand}
-              />
-            )}
-
-            {/* Conversation start divider */}
-            <ConversationDivider />
-
-            {isEmpty ? (
-              <EmptyState displayName={displayName} />
-            ) : (
-              <View style={{ flex: 1, justifyContent: 'flex-end' }}>
-                {renderedItems.map(item => {
-                  if (item.kind === 'timestamp') {
-                    return <TimestampSeparator key={item.key} time={item.time} />;
-                  }
-                  const idx = cardIndex++;
-                  // Reverse stagger: newest message (highest idx) gets delay=0 so it
-                  // appears immediately after the initial snap-to-bottom. Older messages
-                  // (not visible on open) cap at 200ms so they're ready before scroll-up.
-                  const delay = Math.min(Math.max(0, groupCount - 1 - idx), 5) * 40;
-                  return (
-                    <MessageCard
-                      key={item.key}
-                      isOwn={item.isOwn}
-                      messages={item.messages}
-                      contactName={displayName}
-                      contactPhoto={displayPhoto}
-                      delay={delay}
-                    />
-                  );
-                })}
-              </View>
-            )}
-          </>
-        )}
-      </ScrollView>
+          <FlatList<RenderedItem>
+            ref={flatListRef}
+            data={[...renderedItems].reverse()}
+            keyExtractor={item => item.key}
+            inverted={true}
+            renderItem={renderDirectItem}
+            style={{ flex: 1 }}
+            contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 16 }}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
+            ListFooterComponent={
+              <>
+                {canNavigateToFarmstand && (
+                  <FarmstandContextCard
+                    name={displayName}
+                    photo={displayPhoto}
+                    onPress={openFarmstand}
+                  />
+                )}
+                <ConversationDivider />
+                {isEmpty && <EmptyState displayName={displayName} />}
+              </>
+            }
+          />
+        )
+      ) : (
+        <ScrollView
+          ref={scrollViewRef}
+          style={{ flex: 1 }}
+          contentContainerStyle={{
+            flexGrow: 1,
+            paddingHorizontal: 20,
+            paddingBottom: 16,
+          }}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
+          maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 20 }}
+        >
+          {isLoading ? (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+              <ActivityIndicator size="large" color="#4A7C59" />
+            </View>
+          ) : (
+            <>
+              {canNavigateToFarmstand && (
+                <FarmstandContextCard
+                  name={displayName}
+                  photo={displayPhoto}
+                  onPress={openFarmstand}
+                />
+              )}
+              <ConversationDivider />
+              {isEmpty ? (
+                <EmptyState displayName={displayName} />
+              ) : (
+                <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+                  {renderedItems.map((item, index) => {
+                    const isLast = index === renderedItems.length - 1;
+                    if (item.kind === 'timestamp') {
+                      return (
+                        <View key={item.key} ref={isLast ? lastMessageRef : null}>
+                          <TimestampSeparator time={item.time} />
+                        </View>
+                      );
+                    }
+                    const idx = cardIndex++;
+                    const delay = Math.min(Math.max(0, groupCount - 1 - idx), 5) * 40;
+                    return (
+                      <View key={item.key} ref={isLast ? lastMessageRef : null}>
+                        <MessageCard
+                          isOwn={item.isOwn}
+                          messages={item.messages}
+                          contactName={displayName}
+                          contactPhoto={displayPhoto}
+                          delay={delay}
+                        />
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+            </>
+          )}
+        </ScrollView>
+      )}
 
       {/* Input bar / deleted banner */}
       <View>
@@ -1115,7 +1187,10 @@ export default function ChatScreen() {
               isSending={isSending}
               isInputFocused={isInputFocused}
               setIsInputFocused={setIsInputFocused}
-              onFocus={scrollToBottom}
+              onFocus={isDirectMode
+                ? () => flatListRef.current?.scrollToOffset({ offset: 0, animated: false })
+                : scrollToBottom
+              }
             />
           </>
         )}

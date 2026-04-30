@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { VideoView, useVideoPlayer } from 'expo-video';
 import NetInfo from '@react-native-community/netinfo';
 import {
   View,
@@ -34,6 +35,9 @@ import {
   RotateCcw,
   RefreshCw,
   Check,
+  Video,
+  Play,
+  AlertCircle,
 } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
@@ -52,7 +56,7 @@ import {
   createDefaultAddressMapData,
   AddressMapPickerSource,
 } from '@/components/AddressMapPicker';
-import { uploadToSupabaseStorage, isSupabaseConfigured } from '@/lib/supabase';
+import { uploadToSupabaseStorage, deleteFromSupabaseStorage, isSupabaseConfigured, ensureSessionReady } from '@/lib/supabase';
 import { compressImage } from '@/lib/compress-image';
 import {
   addToQueue,
@@ -105,6 +109,8 @@ const STATUS_OPTIONS: { id: FarmstandStatus; label: string; color: string }[] = 
   { id: 'hidden', label: 'Hidden', color: '#ef4444' },
 ];
 
+const MAX_VIDEO_DURATION_SECONDS = 30;
+
 interface PhotoItem {
   id: string;
   uri: string;
@@ -113,6 +119,14 @@ interface PhotoItem {
   isLocalPreview?: boolean;
   /** Queued for retry — persisted in AsyncStorage, auto-retries on connection */
   pendingUpload?: boolean;
+}
+
+interface VideoItem {
+  uri: string;
+  uploading: boolean;
+  failed: boolean;
+  isLocalPreview: boolean;
+  durationSeconds: number | null;
 }
 
 interface FormData {
@@ -136,6 +150,27 @@ interface FormData {
   mainPhotoIndex: number;
   geocodeSource: GeocodeSource;
   geocodeConfidence: GeocodeConfidence;
+}
+
+function VideoThumbnailView({ uri }: { uri: string }) {
+  const player = useVideoPlayer({ uri }, (p) => {
+    p.muted = true;
+    p.play();
+  });
+  useEffect(() => {
+    const sub = player.addListener('statusChange', ({ status }) => {
+      if (status === 'readyToPlay') player.pause();
+    });
+    return () => sub.remove();
+  }, [player]);
+  return (
+    <VideoView
+      player={player}
+      style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+      contentFit="cover"
+      nativeControls={false}
+    />
+  );
 }
 
 function FarmstandEditContent() {
@@ -194,6 +229,9 @@ function FarmstandEditContent() {
   const [showPhotoOptions, setShowPhotoOptions] = useState(false);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [localPhotos, setLocalPhotos] = useState<PhotoItem[]>([]);
+  const [localVideo, setLocalVideo] = useState<VideoItem | null>(null);
+  const [isPremium, setIsPremium] = useState(false);
+  const [farmstandVideoPath, setFarmstandVideoPath] = useState<string | null>(null);
   const [otherProductInput, setOtherProductInput] = useState('');
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
 
@@ -300,6 +338,21 @@ function FarmstandEditContent() {
             .filter((p: string) => p.startsWith('http'))
             .map((url: string) => ({ id: url, uri: url, uploading: false, failed: false, isLocalPreview: false }));
           setLocalPhotos(savedPhotos);
+
+          // Seed video state
+          setIsPremium(farmstand.premiumStatus === 'trial' || farmstand.premiumStatus === 'active');
+          setFarmstandVideoPath(farmstand.videoPath ?? null);
+          if (farmstand.videoUrl) {
+            setLocalVideo({
+              uri: farmstand.videoUrl,
+              uploading: false,
+              failed: false,
+              isLocalPreview: false,
+              durationSeconds: farmstand.videoDurationSeconds ?? null,
+            });
+          } else {
+            setLocalVideo(null);
+          }
 
           // Restore any pending uploads from queue (survives app restarts)
           const pendingUploads = await getQueueForFarmstand(params.id);
@@ -749,6 +802,100 @@ function FarmstandEditContent() {
     );
   };
 
+  // ============ VIDEO MANAGEMENT ============
+
+  const uploadAndSaveAdminVideo = async (localUri: string, durationSeconds: number | null): Promise<void> => {
+    const farmstandId = params.id;
+    if (!farmstandId || !isSupabaseConfigured()) throw new Error('Not configured');
+    await ensureSessionReady();
+
+    // Delete old video from storage if replacing
+    if (farmstandVideoPath) {
+      deleteFromSupabaseStorage('farmstand-videos', farmstandVideoPath).catch(() => {});
+    }
+
+    const timestamp = Date.now();
+    const storagePath = `${farmstandId}/${timestamp}-video.mp4`;
+    const { url: uploadedUrl, error: uploadError } = await uploadToSupabaseStorage(
+      'farmstand-videos',
+      storagePath,
+      localUri,
+      'video/mp4'
+    );
+    if (uploadError || !uploadedUrl) throw new Error(uploadError?.message || 'Video upload failed');
+    if (__DEV__) console.log('[AdminFarmstandEdit] uploadAdminVideo — uploaded URL:', uploadedUrl);
+
+    await updateFarmstand(farmstandId, {
+      videoUrl: uploadedUrl,
+      videoPath: storagePath,
+      videoDurationSeconds: durationSeconds,
+    });
+    if (__DEV__) console.log('[AdminFarmstandEdit] uploadAdminVideo — updateFarmstand complete, farmstandId:', farmstandId);
+
+    setFarmstandVideoPath(storagePath);
+    setLocalVideo({ uri: uploadedUrl, uploading: false, failed: false, isLocalPreview: false, durationSeconds });
+  };
+
+  const pickAdminVideo = async () => {
+    if (__DEV__) console.log('[AdminFarmstandEdit] pickAdminVideo — farmstandId:', params.id, '| isPremium:', isPremium);
+
+    const existing = await ImagePicker.getMediaLibraryPermissionsAsync();
+    let granted = existing.status === 'granted';
+    if (!granted) {
+      if (!existing.canAskAgain) {
+        Alert.alert('Permission Required', 'Please enable photo library access in Settings to add a video.');
+        return;
+      }
+      const requested = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (requested.status !== 'granted') return;
+      granted = true;
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+
+    if (__DEV__) console.log('[AdminFarmstandEdit] pickAdminVideo — launching picker');
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+      allowsEditing: false,
+      quality: 0.3,
+    });
+
+    if (result.canceled || !result.assets[0]) {
+      if (__DEV__) console.log('[AdminFarmstandEdit] pickAdminVideo — cancelled or no asset');
+      return;
+    }
+    const asset = result.assets[0];
+    const durationMs = asset.duration ?? null;
+    if (__DEV__) console.log('[AdminFarmstandEdit] pickAdminVideo — asset uri:', asset.uri.slice(0, 80), '| durationMs:', durationMs, '| fileSize:', (asset as { fileSize?: number }).fileSize ?? 'n/a');
+
+    if (durationMs !== null && durationMs > MAX_VIDEO_DURATION_SECONDS * 1000) {
+      Alert.alert('Video Too Long', `Video must be ${MAX_VIDEO_DURATION_SECONDS} seconds or less.`);
+      return;
+    }
+
+    const durationSeconds = durationMs !== null ? Math.round(durationMs / 1000) : null;
+
+    // Optimistic preview
+    setLocalVideo({ uri: asset.uri, uploading: true, failed: false, isLocalPreview: true, durationSeconds });
+    if (__DEV__) console.log('[AdminFarmstandEdit] pickAdminVideo — upload started, durationSeconds:', durationSeconds);
+
+    uploadAndSaveAdminVideo(asset.uri, durationSeconds).catch((err: unknown) => {
+      if (__DEV__) console.warn('[AdminFarmstandEdit] pickAdminVideo — upload failed:', err instanceof Error ? err.message : String(err));
+      setLocalVideo((prev) => prev ? { ...prev, uploading: false, failed: true } : prev);
+      Alert.alert('Upload Failed', 'Video upload failed. Please try again.');
+    });
+  };
+
+  const removeAdminVideo = async () => {
+    const farmstandId = params.id;
+    if (!farmstandId) return;
+    if (__DEV__) console.log('[AdminFarmstandEdit] removeAdminVideo — farmstandId:', farmstandId, '| videoPath:', farmstandVideoPath);
+    const oldPath = farmstandVideoPath;
+    setLocalVideo(null);
+    setFarmstandVideoPath(null);
+    await updateFarmstand(farmstandId, { videoUrl: null, videoPath: null, videoDurationSeconds: null });
+    if (oldPath) deleteFromSupabaseStorage('farmstand-videos', oldPath).catch(() => {});
+  };
+
   const handleSave = async (asDraft = false) => {
     if (!formData.name.trim()) {
       Alert.alert('Required', 'Please enter a farmstand name');
@@ -795,6 +942,7 @@ function FarmstandEditContent() {
 
         console.log('[AdminFarmstandEdit] Update payload:', JSON.stringify(updatePayload));
         await updateFarmstand(params.id, updatePayload);
+        await loadAdminData();
         Alert.alert('Saved', 'Farmstand updated successfully', [
           { text: 'OK', onPress: () => router.back() },
         ]);
@@ -1237,6 +1385,93 @@ function FarmstandEditContent() {
             </ScrollView>
           </View>
 
+          {/* Video (Premium) Section */}
+          <View className="bg-white mt-4 mx-4 rounded-2xl p-5">
+            <View className="flex-row items-center mb-1">
+              <Video size={18} color="#6b7280" />
+              <Text className="text-sm font-semibold text-gray-500 uppercase ml-2">
+                Video (Premium)
+              </Text>
+            </View>
+            <Text className="text-xs text-gray-500 mb-4">
+              {isPremium ? 'Add 1 video up to 30 seconds' : 'Farmstand is on free plan — video unavailable'}
+            </Text>
+
+            {!isPremium ? (
+              <View className="flex-row items-center bg-amber-50 rounded-xl p-3 border border-amber-200">
+                <Video size={16} color="#D97706" />
+                <Text className="text-amber-700 text-sm ml-2 flex-1">
+                  This farmstand is on the free plan. Video is available on Premium or Trial plans.
+                </Text>
+              </View>
+            ) : localVideo ? (
+              <View>
+                {/* Video preview card */}
+                <View
+                  className="w-28 h-28 rounded-xl overflow-hidden bg-gray-900 relative"
+                  style={{ width: 112, height: 112 }}
+                >
+                  <VideoThumbnailView uri={localVideo.uri} />
+                  {/* Play icon overlay */}
+                  <View className="absolute inset-0 items-center justify-center">
+                    <View className="w-10 h-10 rounded-full bg-white/80 items-center justify-center">
+                      <Play size={18} color="#1C1C1E" fill="#1C1C1E" />
+                    </View>
+                  </View>
+                  {/* Duration badge */}
+                  {localVideo.durationSeconds !== null && (
+                    <View className="absolute bottom-1 right-1 bg-black/60 rounded px-1 py-0.5">
+                      <Text className="text-white text-[9px] font-semibold">
+                        {localVideo.durationSeconds}s
+                      </Text>
+                    </View>
+                  )}
+                  {/* Uploading overlay */}
+                  {localVideo.uploading && (
+                    <View className="absolute inset-0 bg-black/50 items-center justify-center rounded-xl">
+                      <ActivityIndicator size="small" color="#ffffff" />
+                      <Text className="text-white text-[9px] mt-1 font-semibold">Uploading</Text>
+                    </View>
+                  )}
+                  {/* Failed overlay */}
+                  {localVideo.failed && (
+                    <View className="absolute inset-0 bg-red-900/60 items-center justify-center rounded-xl">
+                      <AlertCircle size={16} color="#ffffff" />
+                      <Text className="text-white text-[9px] mt-0.5 font-semibold">Failed</Text>
+                    </View>
+                  )}
+                </View>
+                {/* Replace / Remove buttons */}
+                {!localVideo.uploading && (
+                  <View className="flex-row mt-3 gap-2">
+                    <Pressable
+                      onPress={pickAdminVideo}
+                      className="flex-row items-center bg-green-50 rounded-xl px-3 py-2"
+                    >
+                      <Video size={14} color="#16a34a" />
+                      <Text className="text-green-700 text-xs font-semibold ml-1.5">Replace Video</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={removeAdminVideo}
+                      className="flex-row items-center bg-red-50 rounded-xl px-3 py-2"
+                    >
+                      <Trash2 size={14} color="#DC2626" />
+                      <Text className="text-red-600 text-xs font-semibold ml-1.5">Remove</Text>
+                    </Pressable>
+                  </View>
+                )}
+              </View>
+            ) : (
+              <Pressable
+                onPress={pickAdminVideo}
+                className="w-28 h-28 rounded-xl border-2 border-dashed border-gray-300 items-center justify-center bg-gray-50"
+              >
+                <Video size={28} color="#6b7280" />
+                <Text className="text-gray-500 text-xs mt-2 font-medium">Add Video</Text>
+              </Pressable>
+            )}
+          </View>
+
           {/* Location Section - Using shared AddressMapPicker component */}
           <View className="mt-4 mx-4">
             <AddressMapPicker
@@ -1452,23 +1687,20 @@ function FarmstandEditContent() {
 
       {/* Bottom Actions */}
       <SafeAreaView edges={['bottom']} className="bg-white border-t border-gray-100">
-        <View className="flex-row px-5 py-4">
-          <Pressable
-            onPress={() => handleSave(true)}
-            disabled={isSaving}
-            className="flex-1 py-3 mr-2 bg-gray-100 rounded-xl items-center"
-          >
-            <Text className="text-base font-semibold text-gray-700">Save Draft</Text>
-          </Pressable>
+        <View className="px-5 py-4">
           <Pressable
             onPress={() => handleSave(false)}
             disabled={isSaving}
-            className="flex-1 py-3 ml-2 bg-green-600 rounded-xl items-center flex-row justify-center"
+            className="w-full py-4 bg-green-600 rounded-2xl items-center flex-row justify-center"
           >
-            <Save size={18} color="white" />
-            <Text className="text-base font-semibold text-white ml-2">
-              {formData.status === 'active' ? 'Publish' : 'Save'}
-            </Text>
+            {isSaving ? (
+              <ActivityIndicator size="small" color="#ffffff" />
+            ) : (
+              <>
+                <Save size={18} color="white" />
+                <Text className="text-base font-semibold text-white ml-2">Save Changes</Text>
+              </>
+            )}
           </Pressable>
         </View>
       </SafeAreaView>

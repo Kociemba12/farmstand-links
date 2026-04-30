@@ -1535,6 +1535,8 @@ export async function uploadToSupabaseStorage(
       console.log('[Supabase Storage] Body byte length:', bodyBytes.byteLength);
     }
 
+    const uploadController = new AbortController();
+    const uploadTimeout = setTimeout(() => uploadController.abort(), 20000);
     const uploadResponse = await fetch(uploadUrl, {
       method: 'POST',
       headers: {
@@ -1544,7 +1546,8 @@ export async function uploadToSupabaseStorage(
         'x-upsert': 'true',
       },
       body: bodyBytes as unknown as BodyInit,
-    });
+      signal: uploadController.signal,
+    }).finally(() => clearTimeout(uploadTimeout));
 
     if (__DEV__) {
       console.log('[Supabase Storage] Response status:', uploadResponse.status);
@@ -1562,6 +1565,16 @@ export async function uploadToSupabaseStorage(
 
     return { url: publicUrl, error: null };
   } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      if (__DEV__) console.warn('[Supabase Storage] Upload timed out after 20s');
+      return {
+        url: null,
+        error: {
+          name: 'Error',
+          message: 'Photo upload timed out. Please try a smaller photo or retake the photo.',
+        } as SupabaseError,
+      };
+    }
     if (__DEV__) console.warn('[Supabase Storage] Upload error:', err instanceof Error ? err.message : String(err));
     return {
       url: null,

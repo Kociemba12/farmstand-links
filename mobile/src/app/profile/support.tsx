@@ -19,6 +19,7 @@ import {
   fetchSupportTickets,
   deleteSupportTicket,
 } from '@/lib/support-api';
+import { useSupportUnreadStore } from '@/lib/support-unread-store';
 
 // ─── Status helpers ───────────────────────────────────────────────────────────
 
@@ -83,10 +84,12 @@ function TicketRow({
   ticket,
   onPress,
   onDelete,
+  isUnread = false,
 }: {
   ticket: SupportTicket;
   onPress: () => void;
   onDelete: () => void;
+  isUnread?: boolean;
 }) {
   const [isPressed, setIsPressed] = useState(false);
   const statusColor = getStatusColor(ticket.status as TicketStatus);
@@ -110,6 +113,21 @@ function TicketRow({
           elevation: 3,
         }}
       >
+        {isUnread && (
+          <View
+            style={{
+              position: 'absolute',
+              top: 10,
+              right: 10,
+              width: 10,
+              height: 10,
+              borderRadius: 5,
+              backgroundColor: '#EF4444',
+              borderWidth: 1.5,
+              borderColor: '#FFFFFF',
+            }}
+          />
+        )}
         {/* Single row: icon | content | actions */}
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
 
@@ -225,18 +243,18 @@ export default function SupportScreen() {
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const unreadTicketIds = useSupportUnreadStore(s => s.unreadTicketIds);
 
   const loadTickets = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const data = await fetchSupportTickets();
-      console.log(`[support] Loaded ${data.length} ticket(s):`, data.map(t => t.id));
+      if (__DEV__) console.log(`[support] Loaded ${data.length} ticket(s):`, data.map(t => t.id));
       setTickets(data);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to load tickets';
-      console.error('[support] Fetch error:', err);
-      setError(msg);
+      if (__DEV__) console.warn('[support] Fetch error:', err);
+      setError('Could not load your tickets. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -258,13 +276,17 @@ export default function SupportScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
+            if (__DEV__) console.log('[support] handleDelete — ticket id:', ticket.id);
+            // Optimistically remove from local state immediately
+            setTickets(prev => prev.filter(t => t.id !== ticket.id));
             try {
-              console.log(`[support] Deleting ticket ${ticket.id}`);
               await deleteSupportTicket(ticket.id);
-              console.log(`[support] Deleted ticket ${ticket.id} — re-fetching`);
+              if (__DEV__) console.log('[support] deleteSupportTicket succeeded for id:', ticket.id, '— refreshing');
               await loadTickets();
             } catch (err) {
-              console.error('[support] Delete error:', err);
+              if (__DEV__) console.warn('[support] Delete error:', err);
+              // Restore ticket if delete failed
+              setTickets(prev => [...prev, ticket]);
               Alert.alert('Error', 'Could not delete ticket. Please try again.');
             }
           },
@@ -384,6 +406,7 @@ export default function SupportScreen() {
                     ticket={ticket}
                     onPress={() => handleTicketPress(ticket)}
                     onDelete={() => handleDelete(ticket)}
+                    isUnread={unreadTicketIds.includes(ticket.id)}
                   />
                 ))}
               </View>
@@ -398,6 +421,7 @@ export default function SupportScreen() {
                     ticket={ticket}
                     onPress={() => handleTicketPress(ticket)}
                     onDelete={() => handleDelete(ticket)}
+                    isUnread={unreadTicketIds.includes(ticket.id)}
                   />
                 ))}
               </View>

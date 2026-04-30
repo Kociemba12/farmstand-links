@@ -134,26 +134,21 @@ function ProfileTabIcon({ color, focused }: { color: string; focused: boolean })
   );
 }
 
-// Inbox tab icon with unread badge (messages + alerts combined)
-function InboxTabIcon({ color, focused }: { color: string; focused: boolean }) {  const totalUnreadMessages = useChatStore(s => s.totalUnreadMessages);
-  const unreadLoaded = useChatStore(s => s.unreadLoaded);
+// Inbox tab icon with unread badge (messages + alerts combined, no unreadLoaded gate)
+function InboxTabIcon({ color, focused }: { color: string; focused: boolean }) {
+  const totalUnreadMessages = useChatStore(s => s.totalUnreadMessages);
   const alerts = useAlertsStore(s => s.alerts);
   const unreadAlerts = alerts.filter(a => a.read_at === null).length;
-  const totalUnread = totalUnreadMessages + unreadAlerts;
+  const totalUnread = (totalUnreadMessages ?? 0) + unreadAlerts;
 
-  console.log(
-    '[InboxBadge] render —' +
-    ` unreadConversations(messages): ${totalUnreadMessages}` +
-    ` unreadAlerts: ${unreadAlerts}` +
-    ` finalBadge: ${totalUnread}` +
-    ` loaded: ${unreadLoaded}`
-  );
+  if (__DEV__) console.log('[InboxTabBadge]', { totalUnreadMessages, unreadAlerts, totalUnread });
+
   return (
     <View className="relative">
       <View className={`p-1.5 rounded-xl ${focused ? 'bg-mint/30' : ''}`}>
         <MessageCircle size={22} color={color} />
       </View>
-      {unreadLoaded && totalUnread > 0 && (
+      {totalUnread > 0 && (
         <View
           className="absolute -top-1 -right-1 bg-red-500 rounded-full items-center justify-center"
           style={{ minWidth: 18, height: 18, paddingHorizontal: 4 }}

@@ -198,7 +198,7 @@ export default function FarmDetailScreen() {
         .execute();
 
       if (farmstandError) {
-        console.error('[FarmDetail] Error fetching farmstand claim state:', farmstandError);
+        if (__DEV__) console.warn('[FarmDetail] Error fetching farmstand claim state:', farmstandError);
       }
 
       let claimedBy: string | null = null;
@@ -320,7 +320,7 @@ export default function FarmDetailScreen() {
       // Reconciliation complete — clear any optimistic override so live DB data takes over
       if (id) clearClaimOverride(id);
     } catch (err) {
-      console.error('[FarmDetail] Failed to fetch claim state:', err);
+      if (__DEV__) console.warn('[FarmDetail] Failed to fetch claim state:', err);
       setFreshClaimState(prev => ({ ...prev, isLoading: false }));
     } finally {
       claimFetchInFlightRef.current = false;
@@ -378,8 +378,10 @@ export default function FarmDetailScreen() {
             console.log('[Products] fetched count:', fresh.length, '| farmstand:', id);
           }).catch(() => {});
         }
-      })();
-      fetchFreshClaimState();
+      })().catch(() => {});
+      void fetchFreshClaimState().catch((e: unknown) => {
+        if (__DEV__) console.warn('[FarmDetail] fetchFreshClaimState error:', e);
+      });
     }, [id, refreshSingleFarmstand, loadProducts, fetchProductsForFarmstand, fetchFreshClaimState])
   );
 
@@ -398,7 +400,9 @@ export default function FarmDetailScreen() {
         if (id) {
           refreshSingleFarmstand(id).catch(() => {});
         }
-        fetchFreshClaimState();
+        void fetchFreshClaimState().catch((e: unknown) => {
+          if (__DEV__) console.warn('[FarmDetail] fetchFreshClaimState error:', e);
+        });
         // Cache + network on foreground return
         loadProducts().then(() => {
           if (id) fetchProductsForFarmstand(id);
@@ -434,9 +438,12 @@ export default function FarmDetailScreen() {
   // Log farmstand view when page loads and track click for popularity
   useEffect(() => {
     if (id && farmstand) {
+      if (__DEV__) console.log('[FarmDetail] logFarmstandView + incrementClick — farmstandId:', id);
       logFarmstandView(id, farmstand.name, user?.id);
-      // Track click for popularity scoring
-      incrementClick(farmstand, updateFarmstand);
+      // Track click for popularity scoring — non-critical, must not redscreen on network failure
+      incrementClick(farmstand, updateFarmstand).catch((e: unknown) => {
+        if (__DEV__) console.warn('[FarmDetail] incrementClick error (non-critical):', e instanceof Error ? e.message : String(e));
+      });
     }
   }, [id, farmstand?.id]);
 
@@ -510,7 +517,12 @@ export default function FarmDetailScreen() {
   const heartScale = useSharedValue(1);
 
   useEffect(() => {
-    if (id) loadReviewsForFarm(id);
+    if (id) {
+      if (__DEV__) console.log('[FarmDetail] loadReviewsForFarm — farmstandId:', id);
+      loadReviewsForFarm(id).catch((e: unknown) => {
+        if (__DEV__) console.warn('[FarmDetail] loadReviewsForFarm error (non-critical):', e instanceof Error ? e.message : String(e));
+      });
+    }
   }, [loadReviewsForFarm, id]);
 
   const heartAnimatedStyle = useAnimatedStyle(() => ({
@@ -692,7 +704,9 @@ export default function FarmDetailScreen() {
       logClaimApproved(id, user.id);
     }
     // Background reconciliation — no await so the UI update above is instant
-    fetchFreshClaimState();
+    void fetchFreshClaimState().catch((e: unknown) => {
+      if (__DEV__) console.warn('[FarmDetail] fetchFreshClaimState error:', e);
+    });
     loadAdminData();
   };
 
