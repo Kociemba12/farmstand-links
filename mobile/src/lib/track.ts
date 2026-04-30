@@ -11,7 +11,7 @@
  * - Never include passwords, message text, ticket text, claim notes, or full phone/email.
  */
 
-import { posthog } from '@/lib/posthog';
+import { getPostHog } from '@/lib/posthog';
 import type { PostHogEventProperties } from '@posthog/core';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
@@ -35,7 +35,7 @@ export function trackEvent(
         if (v !== undefined && v !== null) payload[k] = v;
       }
     }
-    posthog.capture(eventName, payload);
+    getPostHog()?.capture(eventName, payload);
   } catch {
     // Never crash the app for analytics
   }

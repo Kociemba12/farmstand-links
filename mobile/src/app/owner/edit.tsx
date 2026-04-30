@@ -55,7 +55,7 @@ import { logFarmstandEdit } from '@/lib/analytics-events';
 import { FarmerRouteGuard } from '@/components/FarmerRouteGuard';
 import { formatPhoneNumber, getPhoneDigits } from '@/lib/phone-utils';
 import { isDefaultCoordinates } from '@/utils/geocode';
-import { uploadToSupabaseStorage, deleteFromSupabaseStorage, isSupabaseConfigured, ensureSessionReady } from '@/lib/supabase';
+import { uploadToSupabaseStorage, deleteFromSupabaseStorage, getStoragePublicUrl, isSupabaseConfigured, ensureSessionReady } from '@/lib/supabase';
 import { useAuth } from '@/providers/AuthProvider';
 import { useCanManageFarmstand } from '@/lib/useCanManageFarmstand';
 import { trackEvent } from '@/lib/track';
@@ -377,6 +377,7 @@ export default function OwnerEditScreen() {
   const ownerDeleteFarmstand = useAdminStore((s) => s.ownerDeleteFarmstand);
 
   const logEdit = useProductsStore((s) => s.logEdit);
+  const fetchProductsForFarmstand = useProductsStore((s) => s.fetchProductsForFarmstand);
 
   const isGuestUser = isGuest();
 
@@ -511,6 +512,8 @@ export default function OwnerEditScreen() {
           // We still load farmstand data so it's ready if ownership is confirmed
 
           setFarmstand(fs);
+          if (__DEV__) console.log('[EditListing] Pre-loading products from farmstand_products for:', farmstandId);
+          fetchProductsForFarmstand(farmstandId).catch(() => {});
           const data: FormData = {
             name: fs.name,
             shortDescription: fs.shortDescription,
@@ -552,6 +555,7 @@ export default function OwnerEditScreen() {
           setLocalPhotos(savedPhotos);
 
           // Seed localVideo from saved remote URL
+          if (__DEV__) console.log('[EditListing] Loaded video fields — videoUrl:', fs.videoUrl ?? '(none)', '| videoPath:', fs.videoPath ?? '(none)', '| duration:', fs.videoDurationSeconds ?? '(none)');
           if (fs.videoUrl) {
             setLocalVideo({
               uri: fs.videoUrl,
@@ -870,24 +874,34 @@ export default function OwnerEditScreen() {
 
     const timestamp = Date.now();
     const storagePath = `${farmstandId}/${timestamp}-video.mp4`;
-    const { url: uploadedUrl, error: uploadError } = await uploadToSupabaseStorage(
+    if (__DEV__) console.log('[EditFarm] uploadAndSaveVideo — storagePath:', storagePath);
+
+    const { error: uploadError } = await uploadToSupabaseStorage(
       'farmstand-videos',
       storagePath,
       localUri,
       'video/mp4'
     );
-    if (uploadError || !uploadedUrl) throw new Error(uploadError?.message || 'Video upload failed');
-    if (__DEV__) console.log('[EditFarm] uploadAndSaveVideo — uploaded URL:', uploadedUrl);
+    if (uploadError) throw new Error(uploadError.message || 'Video upload failed');
 
-    await updateFarmstand(farmstandId, {
-      videoUrl: uploadedUrl,
-      videoPath: storagePath,
-      videoDurationSeconds: durationSeconds,
-    });
-    if (__DEV__) console.log('[EditFarm] uploadAndSaveVideo — updateFarmstand completed for farmstandId:', farmstandId);
+    // Derive canonical public URL via getStoragePublicUrl
+    // (equivalent to supabase.storage.from('farmstand-videos').getPublicUrl(storagePath))
+    const publicUrl = getStoragePublicUrl('farmstand-videos', storagePath);
+    if (__DEV__) console.log('[EditFarm] uploadAndSaveVideo — generated public URL:', publicUrl);
 
-    setFarmstand((prev) => prev ? { ...prev, videoUrl: uploadedUrl, videoPath: storagePath, videoDurationSeconds: durationSeconds } : prev);
-    setLocalVideo({ uri: uploadedUrl, uploading: false, failed: false, isLocalPreview: false, durationSeconds });
+    const dbPayload = { videoUrl: publicUrl, videoPath: storagePath, videoDurationSeconds: durationSeconds };
+    if (__DEV__) console.log('[EditFarm] uploadAndSaveVideo — updating farmstands row with:', JSON.stringify(dbPayload));
+
+    try {
+      await updateFarmstand(farmstandId, dbPayload);
+      if (__DEV__) console.log('[EditFarm] uploadAndSaveVideo — updateFarmstand succeeded');
+    } catch (e) {
+      if (__DEV__) console.warn('[EditFarm] uploadAndSaveVideo — updateFarmstand threw:', e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+
+    setFarmstand((prev) => prev ? { ...prev, videoUrl: publicUrl, videoPath: storagePath, videoDurationSeconds: durationSeconds } : prev);
+    setLocalVideo({ uri: publicUrl, uploading: false, failed: false, isLocalPreview: false, durationSeconds });
     showToast('Video uploaded!', 'success');
   };
 
@@ -954,8 +968,10 @@ export default function OwnerEditScreen() {
   const removeVideo = async () => {
     if (!farmstandId) return;
     const oldPath = farmstand?.videoPath;
+    if (__DEV__) console.log('[EditFarm] removeVideo — clearing video fields, oldPath:', oldPath ?? '(none)');
     setLocalVideo(null);
     await updateFarmstand(farmstandId, { videoUrl: null, videoPath: null, videoDurationSeconds: null });
+    if (__DEV__) console.log('[EditFarm] removeVideo — updateFarmstand succeeded (video_url=null, video_path=null)');
     setFarmstand((prev) => prev ? { ...prev, videoUrl: null, videoPath: null, videoDurationSeconds: null } : prev);
     if (oldPath) deleteFromSupabaseStorage('farmstand-videos', oldPath).catch(() => {});
     showToast('Video removed.', 'success');
@@ -1211,6 +1227,32 @@ export default function OwnerEditScreen() {
         offerings: [...selectedProductCategories, ...otherProductItems],
         otherProducts: otherProductItems,
       };
+
+      // Video — always include in Save Changes so the DB stays in sync regardless
+      // of whether the optimistic per-upload save succeeded.
+      const isVideoReady =
+        localVideo !== null &&
+        !localVideo.isLocalPreview &&
+        !localVideo.uploading &&
+        !localVideo.failed;
+      if (isVideoReady) {
+        updates.videoUrl = localVideo!.uri;
+        updates.videoPath = farmstand?.videoPath ?? null;
+        updates.videoDurationSeconds = localVideo!.durationSeconds;
+        if (__DEV__) console.log('[EditListing] Save includes video — videoUrl:', updates.videoUrl, '| videoPath:', updates.videoPath, '| duration:', updates.videoDurationSeconds);
+      } else if (localVideo === null) {
+        // No video (never set or explicitly removed)
+        updates.videoUrl = null;
+        updates.videoPath = null;
+        updates.videoDurationSeconds = null;
+        if (__DEV__) console.log('[EditListing] Save — no video, persisting null for video fields');
+      } else {
+        // Upload still in progress or failed — preserve whatever is already in the DB
+        updates.videoUrl = farmstand?.videoUrl ?? null;
+        updates.videoPath = farmstand?.videoPath ?? null;
+        updates.videoDurationSeconds = farmstand?.videoDurationSeconds ?? null;
+        if (__DEV__) console.log('[EditListing] Save — video upload in progress or failed, preserving existing DB values');
+      }
 
       // DEBUG: Log the hours and isOpen24_7 values being sent
       console.log('[EditListing] Updates object hours:', JSON.stringify(updates.hours));

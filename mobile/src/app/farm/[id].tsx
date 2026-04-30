@@ -371,11 +371,12 @@ export default function FarmDetailScreen() {
       (async () => {
         await loadProducts();
         const cached = id ? getActiveProductsForFarmstand(id) : [];
-        console.log('[Products] cache count:', cached.length, '| farmstand:', id);
+        if (__DEV__) console.log('[Products] cache count:', cached.length, '| farmstand:', id);
         if (id) {
+          if (__DEV__) console.log('[Products] loading products for farmstand_id:', id);
           fetchProductsForFarmstand(id).then(() => {
             const fresh = getActiveProductsForFarmstand(id);
-            console.log('[Products] fetched count:', fresh.length, '| farmstand:', id);
+            if (__DEV__) console.log('[Products] fetched count:', fresh.length, '| farmstand:', id);
           }).catch(() => {});
         }
       })().catch(() => {});
@@ -512,7 +513,7 @@ export default function FarmDetailScreen() {
 
   const reviews = id ? getReviewsForFarm(id) : [];
   const farmstandProducts = id ? getActiveProductsForFarmstand(id) : [];
-  console.log(`[Products] final rendered count: ${farmstandProducts.length} | farmstand: ${id}`);
+  if (__DEV__) console.log(`[Products] final rendered count: ${farmstandProducts.length} | farmstand: ${id}`);
 
   const heartScale = useSharedValue(1);
 

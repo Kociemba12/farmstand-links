@@ -1587,6 +1587,14 @@ export async function uploadToSupabaseStorage(
 }
 
 /**
+ * Get the public URL for a Supabase Storage object.
+ * Equivalent to supabase.storage.from(bucket).getPublicUrl(path).
+ */
+export function getStoragePublicUrl(bucket: string, path: string): string {
+  return `${supabaseUrl}/storage/v1/object/public/${bucket}/${path}`;
+}
+
+/**
  * Delete a file from Supabase Storage.
  */
 export async function deleteFromSupabaseStorage(

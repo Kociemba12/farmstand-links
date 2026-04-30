@@ -1,6 +1,6 @@
 import { LogBox } from 'react-native';
 import { PostHogProvider } from 'posthog-react-native';
-import { posthog } from '@/lib/posthog';
+import { getPostHog } from '@/lib/posthog';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
@@ -53,9 +53,6 @@ export const unstable_settings = {
   // Ensure that reloading on `/modal` keeps a back button present.
   initialRouteName: '(tabs)',
 };
-
-// Prevent the splash screen from auto-hiding before asset loading is complete.
-SplashScreen.preventAutoHideAsync();
 
 const queryClient = new QueryClient();
 
@@ -536,19 +533,27 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
   // Initialize analytics and log app_open on app start
   // Note: Analytics is already loaded by bootstrap, this just logs the open event
   useEffect(() => {
-    // Log Supabase config at boot to verify correct project is targeted (critical for TestFlight debugging)
-    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || '(not set)';
-    const anonKeyPreview = (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '').slice(0, 20);
-    console.log('[App Boot] Supabase URL:', supabaseUrl);
-    console.log('[App Boot] Supabase Anon Key prefix:', anonKeyPreview || '(not set)');
-
-    initAnalytics().then(() => {
-      logAppOpen(user?.id);
-    });
+    (async () => {
+      // Log Supabase config at boot to verify correct project is targeted (critical for TestFlight debugging)
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || '(not set)';
+      const anonKeyPreview = (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '').slice(0, 20);
+      console.log('[App Boot] Supabase URL:', supabaseUrl);
+      console.log('[App Boot] Supabase Anon Key prefix:', anonKeyPreview || '(not set)');
+      try {
+        await initAnalytics();
+        logAppOpen(user?.id);
+      } catch (e) {
+        if (__DEV__) console.log('[Startup] initAnalytics error:', e);
+      }
+    })();
   }, []);
 
-  // Initialize push notifications after user session is available
+  // Initialize push notifications after user session is available.
+  // authLoading guard ensures we never register push tokens before the Supabase
+  // session is fully hydrated — avoids registering against a stale/pre-auth user ID
+  // that was read from AsyncStorage before the session was confirmed on first launch.
   useEffect(() => {
+    if (authLoading) return;
     // Only initialize once per session, and only if user is logged in
     if (!user?.id || user.id === 'guest' || pushNotificationsInitialized.current) {
       return;
@@ -582,7 +587,7 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
     };
 
     initPush();
-  }, [user?.id]);
+  }, [user?.id, authLoading]);
 
   // Sync profiles.expo_push_token whenever the user changes or app comes to foreground.
   // This is a separate, lightweight sync that runs independently of the one-shot
@@ -760,7 +765,7 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
         console.log('All reviews have been cleared');
       }
     };
-    clearReviewsOnce();
+    clearReviewsOnce().catch((e) => { if (__DEV__) console.log('[Startup] clearReviewsOnce error:', e); });
   }, [clearAllReviews]);
 
   return (
@@ -840,6 +845,11 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
 export default function RootLayout() {
   const colorScheme = useColorScheme();
 
+  // Lazy-init PostHog inside the component lifecycle (never at module eval time).
+  // useState initializer runs once synchronously on first render, safely after
+  // all native modules have been loaded.
+  const [posthogClient] = useState(() => getPostHog());
+
   // ── Splash state ──────────────────────────────────────────────────────────
   // splashVisible: keeps the Animated.View in the tree during fade-out
   const [splashVisible, setSplashVisible] = useState(true);
@@ -861,18 +871,38 @@ export default function RootLayout() {
   });
 
   useEffect(() => {
-    // Hide the native splash screen immediately since we show our custom one
-    SplashScreen.hideAsync();
-    // Initialize RevenueCat once on app startup
-    initRevenueCat();
+    (async () => {
+      if (__DEV__) console.log('[Startup] RootLayout mounted — preventing auto-hide, hiding native splash, initializing RC');
+      // preventAutoHideAsync must be called before hideAsync. Both are inside this
+      // effect so neither ever runs at module-eval time (which caused SIGABRT on
+      // first TestFlight launch when the native SplashScreen module wasn't ready).
+      try {
+        await SplashScreen.preventAutoHideAsync();
+      } catch (e) {
+        if (__DEV__) console.log('[Startup] SplashScreen.preventAutoHideAsync threw (non-fatal):', e);
+      }
+      try {
+        await SplashScreen.hideAsync();
+      } catch (e) {
+        if (__DEV__) console.log('[Startup] SplashScreen.hideAsync threw (non-fatal):', e);
+      }
+      // Initialize RevenueCat once on app startup (internally guarded with try/catch)
+      initRevenueCat();
+    })();
   }, []);
 
   // Start bootstrap ONCE when fonts are loaded
   useEffect(() => {
     if (fontsLoaded && !bootstrapStarted.current) {
       bootstrapStarted.current = true;
-      console.log('[RootLayout] Starting bootstrap...');
-      bootstrap();
+      if (__DEV__) console.log('[Startup] bootstrap starting');
+      (async () => {
+        try {
+          await bootstrap();
+        } catch (e) {
+          if (__DEV__) console.log('[Startup] bootstrap threw:', e);
+        }
+      })();
     }
   }, [fontsLoaded, bootstrap]);
 
@@ -926,7 +956,7 @@ export default function RootLayout() {
 
   // ── Render: app always mounts (once fonts load), splash overlays on top ───
   return (
-    <PostHogProvider client={posthog}>
+    <PostHogProvider client={posthogClient}>
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#F4F1E8' }}>
       <StatusBar style={splashVisible ? 'light' : (colorScheme === 'dark' ? 'light' : 'dark')} />
       {fontsLoaded && (

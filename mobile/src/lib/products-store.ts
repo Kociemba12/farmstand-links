@@ -198,31 +198,47 @@ export const useProductsStore = create<ProductsState>((set, get) => ({
 
   // ── fetchProductsForFarmstand: Supabase source of truth ────
   fetchProductsForFarmstand: async (farmstand_id: string) => {
-    console.log('[Products] fetchProductsForFarmstand START — farmstand_id:', farmstand_id);
+    if (__DEV__) console.log('[Products] fetchProductsForFarmstand — farmstand_id:', farmstand_id);
 
     if (!farmstand_id) {
-      console.log('[Products] fetchProductsForFarmstand: no farmstand_id, aborting');
+      if (__DEV__) console.log('[Products] fetchProductsForFarmstand: no farmstand_id, aborting');
       return;
     }
 
     set({ isLoading: true });
 
     if (!isSupabaseConfigured()) {
-      console.log('[Products] Supabase not configured — falling back to local cache');
+      if (__DEV__) console.log('[Products] Supabase not configured — falling back to local cache');
       await get().loadProducts();
       return;
     }
 
     try {
-      const { data, error } = await supabase
+      // Prefer an authenticated read so RLS SELECT policies allow access.
+      // farmstand_products may require auth.uid() IS NOT NULL to SELECT.
+      // Falls back to anon key for public/guest visitors with no session.
+      let result = await supabase
         .from<SupabaseProductRow>('farmstand_products')
         .select('*')
         .eq('farmstand_id', farmstand_id)
         .order('created_at', { ascending: true })
+        .requireAuth()
         .execute();
 
+      if (result.error?.message === 'AUTH_REQUIRED') {
+        if (__DEV__) console.log('[Products] fetchProductsForFarmstand — no session, retrying with anon key');
+        result = await supabase
+          .from<SupabaseProductRow>('farmstand_products')
+          .select('*')
+          .eq('farmstand_id', farmstand_id)
+          .order('created_at', { ascending: true })
+          .execute();
+      }
+
+      const { data, error } = result;
+
       if (error) {
-        console.log('[Products] Supabase fetch error:', error.message);
+        if (__DEV__) console.warn('[Products] fetchProductsForFarmstand — Supabase error:', error.message);
         const cached = get().products;
         if (cached.length === 0) {
           await get().loadProducts();
@@ -233,7 +249,20 @@ export const useProductsStore = create<ProductsState>((set, get) => ({
       }
 
       const rows = data ?? [];
-      console.log('[Products] Supabase fetch SUCCESS — rows returned:', rows.length, '— farmstand_id:', farmstand_id);
+      if (__DEV__) console.log('[Products] fetchProductsForFarmstand — rows returned from farmstand_products:', rows.length, '| farmstand_id:', farmstand_id);
+
+      // Safety net: if Supabase returned 0 rows but the local cache already has
+      // UUID-format products for this farmstand, preserve the cache instead of
+      // overwriting it with empty. This prevents a silent RLS read failure (where
+      // the table returns [] instead of an error) from wiping valid cached data.
+      const hadCachedUuidProducts = get().products.some(
+        (p) => p.farmstand_id === farmstand_id && isSupabaseUuid(p.id)
+      );
+      if (rows.length === 0 && hadCachedUuidProducts) {
+        if (__DEV__) console.log('[Products] fetchProductsForFarmstand — 0 rows from Supabase but cache has UUID products; preserving cache to avoid silent-RLS wipe');
+        set({ isLoading: false });
+        return;
+      }
 
       const fetched = rows.map(rowToProduct);
       const supabaseIds = new Set(fetched.map((p) => p.id));
@@ -243,16 +272,16 @@ export const useProductsStore = create<ProductsState>((set, get) => ({
         (p) => p.farmstand_id === farmstand_id && !isSupabaseUuid(p.id) && !supabaseIds.has(p.id)
       );
       if (localOnlyProducts.length > 0) {
-        console.log('[Products] Preserving', localOnlyProducts.length, 'local-only product(s) pending Supabase sync');
+        if (__DEV__) console.log('[Products] Preserving', localOnlyProducts.length, 'local-only product(s) pending Supabase sync');
       }
       const merged = [...otherProducts, ...localOnlyProducts, ...fetched];
 
       await AsyncStorage.setItem('farmstand_products', JSON.stringify(merged));
       set({ products: merged, isLoading: false });
 
-      console.log('[Products] fetchProductsForFarmstand END — total in store:', merged.length);
+      if (__DEV__) console.log('[Products] fetchProductsForFarmstand — store updated | rows for this farmstand:', fetched.length, '| total store:', merged.length);
     } catch (err) {
-      console.log('[Products] fetchProductsForFarmstand unexpected error:', err);
+      if (__DEV__) console.log('[Products] fetchProductsForFarmstand unexpected error:', err);
       await get().loadProducts();
     }
   },

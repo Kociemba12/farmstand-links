@@ -47,6 +47,8 @@ interface ConversationRow {
   owner_unread_count: number | null;
   created_at: string;
   updated_at: string;
+  deleted_by_owner_at?: string | null;
+  deleted_by_customer_at?: string | null;
   farmstands?: {
     name?: string | null;
     photos?: string[] | null;
@@ -638,8 +640,37 @@ export default function InboxScreen() {
         },
       });
       if (res.ok) {
-        const rows = await res.json() as ConversationRow[];
-        if (__DEV__) console.log('[Inbox] inbox conversation count:', rows.length, 'from public.conversations');
+        const rawRows = await res.json() as ConversationRow[];
+        if (__DEV__) console.log('[Inbox] rows from public.conversations before soft-delete filter:', rawRows.length);
+
+        // Filter out rows soft-deleted by this user. Auto-unhide if a new message
+        // arrived after the deletion timestamp (matches backend auto-unhide behavior).
+        const rows = rawRows.filter(row => {
+          const isOwner = row.owner_id === user!.id;
+          const deletedAt = isOwner ? (row.deleted_by_owner_at ?? null) : (row.deleted_by_customer_at ?? null);
+          if (!deletedAt) return true;
+          // Auto-unhide: new message arrived after user deleted the thread
+          if (row.last_message_at && row.last_message_at > deletedAt) {
+            if (__DEV__) console.log(`[Inbox] auto-unhide: new message after soft-delete — clearing column for conversation id=${row.id}`);
+            const patchCol = isOwner ? 'deleted_by_owner_at' : 'deleted_by_customer_at';
+            const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+            fetch(`${supabaseUrl}/rest/v1/conversations?id=eq.${row.id}`, {
+              method: 'PATCH',
+              headers: {
+                apikey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '',
+                Authorization: `Bearer ${session.access_token}`,
+                'Content-Type': 'application/json',
+                Prefer: 'return=minimal',
+              },
+              body: JSON.stringify({ [patchCol]: null }),
+            }).catch(() => {});
+            return true;
+          }
+          if (__DEV__) console.log(`[Inbox] filtering out soft-deleted conversation id=${row.id} role=${isOwner ? 'owner' : 'customer'} deletedAt=${deletedAt}`);
+          return false;
+        });
+        if (__DEV__) console.log('[Inbox] inbox conversation count after soft-delete filter:', rows.length, '(filtered out:', rawRows.length - rows.length, ')');
+
         const convs: Conversation[] = rows.map(row => {
           const viewerIsOwner = row.owner_id === user.id;
           const otherUserId = viewerIsOwner ? row.customer_id : row.owner_id;
@@ -813,27 +844,66 @@ export default function InboxScreen() {
 
     try {
       const session = await getValidSession();
-      if (session?.access_token && BACKEND_URL) {
-        const res = await fetch(`${BACKEND_URL}/api/messages/hide-thread`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            farmstand_id: deleted.farmstand_id,
-            other_user_id: deleted.other_user_id,
-          }),
-        });
-        if (res.ok) {
-          console.log(`[Inbox] hide-thread API succeeded for key=${convKey}`);
-        } else {
-          const errText = await res.text();
-          console.log(`[Inbox] hide-thread API error: ${res.status} ${errText}`);
+      if (session?.access_token) {
+        const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+        const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
+        const isOwner = deleted.viewer_is_owner ?? false;
+        const ownerId  = isOwner ? user!.id : deleted.other_user_id;
+        const customerId = isOwner ? deleted.other_user_id : user!.id;
+        const patchCol = isOwner ? 'deleted_by_owner_at' : 'deleted_by_customer_at';
+        const deletedAt = new Date().toISOString();
+        if (__DEV__) console.log(`[Inbox] soft-delete PATCH — col=${patchCol} userId=${user?.id} role=${isOwner ? 'owner' : 'customer'} conversationKey=${convKey} deletedAt=${deletedAt}`);
+
+        // ── Soft-delete in conversations table (primary persistence) ───────────
+        try {
+          const patchUrl = `${supabaseUrl}/rest/v1/conversations?farmstand_id=eq.${deleted.farmstand_id}&customer_id=eq.${customerId}&owner_id=eq.${ownerId}`;
+          const patchRes = await fetch(patchUrl, {
+            method: 'PATCH',
+            headers: {
+              apikey: supabaseAnonKey,
+              Authorization: `Bearer ${session.access_token}`,
+              'Content-Type': 'application/json',
+              Prefer: 'return=minimal',
+            },
+            body: JSON.stringify({ [patchCol]: deletedAt }),
+          });
+          if (__DEV__) {
+            if (patchRes.ok) {
+              console.log(`[Inbox] soft-delete PATCH succeeded for conversationKey=${convKey}`);
+            } else {
+              const errText = await patchRes.text();
+              console.log(`[Inbox] soft-delete PATCH failed: ${patchRes.status} ${errText.slice(0, 200)}`);
+            }
+          }
+        } catch (patchErr) {
+          if (__DEV__) console.log('[Inbox] soft-delete PATCH exception:', patchErr instanceof Error ? patchErr.message : String(patchErr));
+        }
+
+        // ── Backend hide-thread (belt-and-suspenders for SQLite + hidden_threads) ──
+        if (BACKEND_URL) {
+          const res = await fetch(`${BACKEND_URL}/api/messages/hide-thread`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              farmstand_id: deleted.farmstand_id,
+              other_user_id: deleted.other_user_id,
+            }),
+          });
+          if (__DEV__) {
+            if (res.ok) {
+              console.log(`[Inbox] hide-thread API succeeded for key=${convKey}`);
+            } else {
+              const errText = await res.text();
+              console.log(`[Inbox] hide-thread API error: ${res.status} ${errText}`);
+            }
+          }
         }
       }
     } catch (err) {
-      console.log('[Inbox] hide-thread exception:', err instanceof Error ? err.message : String(err));
+      if (__DEV__) console.log('[Inbox] delete exception:', err instanceof Error ? err.message : String(err));
     }
 
     // Refetch from server — dismissed key filter will catch any that slip through

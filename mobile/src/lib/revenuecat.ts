@@ -17,25 +17,6 @@ const IOS_KEY = process.env.EXPO_PUBLIC_REVENUECAT_API_KEY ?? '';
 // Tracks whether configure() succeeded and it is safe to call Purchases methods.
 let _rcReady = false;
 
-// Install a custom log handler so RevenueCat SDK messages never reach console.error.
-// The SDK normally calls console.error for ERROR-level events (e.g. offerings fetch
-// failures when App Store Connect products aren't configured), which triggers React
-// Native's dev error overlay. Routing everything through console.warn means the
-// messages stay visible for debugging but don't produce red-box overlays.
-try {
-  Purchases.setLogHandler((level, message) => {
-    if (level === LOG_LEVEL.ERROR || level === LOG_LEVEL.WARN) {
-      console.warn('[RevenueCat]', message);
-    } else if (level === LOG_LEVEL.INFO) {
-      console.log('[RevenueCat]', message);
-    } else {
-      // DEBUG / VERBOSE — suppress entirely to keep logs clean
-    }
-  });
-} catch {
-  // setLogHandler not available (e.g. native module not linked) — safe to ignore
-}
-
 /** Returns true only if RevenueCat was successfully configured this session. */
 export function isRevenueCatReady(): boolean {
   return _rcReady;
@@ -63,6 +44,22 @@ export function initRevenueCat(): void {
   if (!IOS_KEY) {
     console.warn('[RevenueCat] EXPO_PUBLIC_REVENUECAT_API_KEY is not set — purchases unavailable');
     return;
+  }
+
+  // Install a custom log handler so RevenueCat SDK messages never reach console.error.
+  // Done here (inside initRevenueCat) rather than at module level so it never runs
+  // before native modules are ready — avoids a potential SIGABRT on first launch.
+  try {
+    Purchases.setLogHandler((level, message) => {
+      if (level === LOG_LEVEL.ERROR || level === LOG_LEVEL.WARN) {
+        console.warn('[RevenueCat]', message);
+      } else if (level === LOG_LEVEL.INFO) {
+        console.log('[RevenueCat]', message);
+      }
+      // DEBUG / VERBOSE — suppress entirely to keep logs clean
+    });
+  } catch {
+    // setLogHandler not available (e.g. native module not linked) — safe to ignore
   }
 
   try {
