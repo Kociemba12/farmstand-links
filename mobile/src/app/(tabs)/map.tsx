@@ -45,7 +45,7 @@ import { GoldVerifiedRibbon } from '@/components/GoldVerifiedRibbon';
 import { PremiumBadge, isPremiumFarmstand } from '@/components/PremiumBadge';
 import { logMapOpen } from '@/lib/analytics-events';
 import { trackEvent } from '@/lib/track';
-import { useMapFiltersStore, SortMode } from '@/lib/map-filters-store';
+import { useMapFiltersStore, SortMode, MAX_FILTER_RADIUS } from '@/lib/map-filters-store';
 import { useReviewsStore } from '@/lib/reviews-store';
 import { supabase } from '@/lib/supabase';
 import * as Haptics from 'expo-haptics';
@@ -221,14 +221,15 @@ interface ExtendedFarmStand extends FarmStand {
 // Helper to get hours status text
 const getHoursStatus = (hours: HoursSchedule | null | undefined, isOpen: boolean): { text: string; isOpenNow: boolean } => {
   if (!hours) {
-    return { text: isOpen ? 'Hours vary' : 'Closed', isOpenNow: isOpen };
+    // No structured hours data — treat as closed for "Open Now" filter purposes
+    return { text: isOpen ? 'Hours vary' : 'Closed', isOpenNow: false };
   }
 
   const now = new Date();
   const dayOfWeek = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][now.getDay()] as keyof Omit<HoursSchedule, 'timezone' | 'exceptions'>;
   const todayHours = hours[dayOfWeek];
 
-  if (todayHours.closed || !todayHours.open || !todayHours.close) {
+  if (!todayHours || todayHours.closed || !todayHours.open || !todayHours.close) {
     const days = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
     for (let i = 1; i <= 7; i++) {
       const nextDayIndex = (now.getDay() + i) % 7;
@@ -286,6 +287,15 @@ export default function MapScreen() {
     // Unique nonce stamped on every Explore→Map navigation so the Map always
     // re-processes the filter even when the search term is identical to a cleared search
     searchNonce?: string;
+    // Generic collection from Explore "Show all" — Top Spots, New This Week, Most Saved, Open Now, etc.
+    collectionIds?: string;
+    collectionLabel?: string;
+    collectionNonce?: string;
+    // Radius restriction passed from Explore sections that use a local radius (e.g. Egg Stands Near You)
+    navRadiusMiles?: string;
+    // Open Now filter from Explore "Show all" — activates panel filter, NOT a fixed collection
+    navOpenNow?: string;
+    openNowNonce?: string;
   }>();
   const mapRef = useRef<MapView>(null);
   const flatListRef = useRef<FlatList<ExtendedFarmStand>>(null);
@@ -300,6 +310,21 @@ export default function MapScreen() {
   const [pinnedFarmstand, setPinnedFarmstand] = useState<ExtendedFarmStand | null>(null);
   // Mirror as ref so effects can guard without adding pinnedFarmstand to their deps
   const pinnedFarmstandRef = useRef<ExtendedFarmStand | null>(null);
+  // Active collection scope — set when Explore "Show all" passes a curated ID list (e.g. Top Spots).
+  // null = normal map; string[] = only these farmstands are shown.
+  const [activeCollectionIds, setActiveCollectionIds] = useState<string[] | null>(null);
+  const [activeCollectionLabel, setActiveCollectionLabel] = useState<string | null>(null);
+  // Ref to prevent the collection zoom effect from re-firing after the initial zoom
+  const processedCollectionZoomRef = useRef<string | null>(null);
+  // Set to true when navRadiusMiles was applied via Explore navigation.
+  // clearPrimaryMapContext resets the radius back to MAX_FILTER_RADIUS only when this is true,
+  // so user-set panel radius is not disturbed by unrelated chip X presses.
+  const navRadiusMilesSetRef = useRef(false);
+  // Set to true when filterOpenNow was activated via Explore "Open Now → Show all".
+  // clearPrimaryMapContext resets openNow = false only when this is true, so a user-set
+  // Open Now filter from the panel is not cleared by unrelated chip X presses.
+  const navOpenNowSetRef = useRef(false);
+
   const [visibleRegion, setVisibleRegion] = useState<Region>(OREGON_REGION);
   const [_userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [isLocating, setIsLocating] = useState(false);
@@ -379,9 +404,12 @@ export default function MapScreen() {
     trackEvent('map_sort_changed', { sort_mode: mode });
   };
   const filterMinRating = useMapFiltersStore((s) => s.minRating);
+  const filterRadiusMiles = useMapFiltersStore((s) => s.radiusMiles);
+  const setRadiusMiles = useMapFiltersStore((s) => s.setRadiusMiles);
   const filterMinPrice = useMapFiltersStore((s) => s.minPrice);
   const filterMaxPrice = useMapFiltersStore((s) => s.maxPrice);
   const filterOpenNow = useMapFiltersStore((s) => s.openNow);
+  const setOpenNow = useMapFiltersStore((s) => s.setOpenNow);
   const filterInStockOnly = useMapFiltersStore((s) => s.inStockOnly);
   const filterCategories = useMapFiltersStore((s) => s.selectedCategories);
   const filterSavedOnly = useMapFiltersStore((s) => s.savedOnly);
@@ -480,23 +508,51 @@ export default function MapScreen() {
   const loadPromotionsData = usePromotionsStore((s) => s.loadPromotionsData);
   const getBoostedForMap = usePromotionsStore((s) => s.getBoostedForMap);
 
-  // Central reset helper — call before applying any new search source.
-  // Resets ALL filter/search state and marks route params as stale so that
-  // stale matchedFarmstandIds / matchedFarmstandId never override the new action.
-  const clearAllMapFilters = useCallback((reason: string) => {
-    if (__DEV__) console.log('[Map] clearAllMapFilters —', reason);
+  // Central reset helper — call whenever a new primary context starts (new search, new Explore
+  // nav, chip X, search bar clear). Clears all primary context state and marks the current
+  // nonce as consumed so it cannot reapply via useFocusEffect.
+  //
+  // Uses the most specific active nonce — collection > search — so the right guard is set
+  // regardless of which type of context was previously active.
+  //
+  // Does NOT clear panel filters (rating, price, open-now, etc.) — those are secondary and
+  // persist intentionally. Only the nav-applied radius is reset when navRadiusMilesSetRef is set.
+  const clearPrimaryMapContext = useCallback((reason: string) => {
+    const activeNonce = params.collectionNonce ?? params.openNowNonce ?? params.searchNonce ?? '0';
+    if (__DEV__) {
+      console.log('[MapContext] clearing primary context | reason:', reason,
+        '| nonce:', activeNonce,
+        '| params.search:', params.search ?? '(none)',
+        '| params.collectionLabel:', params.collectionLabel ?? '(none)',
+        '| navOpenNow:', params.navOpenNow ?? '(none)');
+    }
     paramsStaleRef.current = true;
-    userClearedNonceRef.current = params.searchNonce ?? '0';
-    // Intentionally NOT resetting processedParamsRef.current — the full paramsKey guard
-    // (Guard 2 in useFocusEffect) must stay intact. Resetting it to null would allow
-    // old Explore params to slip through if userClearedNonceRef is later nulled.
-    processedSearchRef.current = null;
+    userClearedNonceRef.current = activeNonce;
+    // Intentionally NOT resetting processedParamsRef.current — the paramsKey guard in
+    // useFocusEffect must stay intact so old Explore params cannot slip through on re-focus.
+    // Same for processedSearchRef — preserve so the text-search block cannot re-apply.
+    processedSearchRef.current = params.search
+      ? `${params.search}-${params.searchNonce ?? '0'}`
+      : null;
     initialSearchHandledRef.current = false;
     setSearchDraftText('');
     setActiveSearchQuery('');
     setMapFilter(null);
+    setActiveCollectionIds(null);
+    setActiveCollectionLabel(null);
     clearSearch();
-  }, [clearSearch, params.searchNonce]);
+    // Reset nav-applied panel filters — only if they were set via Explore navigation
+    if (navRadiusMilesSetRef.current) {
+      navRadiusMilesSetRef.current = false;
+      setRadiusMiles(MAX_FILTER_RADIUS);
+      if (__DEV__) console.log('[MapContext] nav-applied radius reset to MAX_FILTER_RADIUS');
+    }
+    if (navOpenNowSetRef.current) {
+      navOpenNowSetRef.current = false;
+      setOpenNow(false);
+      if (__DEV__) console.log('[MapContext] nav-applied openNow reset to false');
+    }
+  }, [clearSearch, params.searchNonce, params.collectionNonce, params.openNowNonce, params.collectionLabel, params.search, setRadiusMiles, setOpenNow]);
 
   // Load admin data on mount and when returning to this screen
   useFocusEffect(
@@ -507,56 +563,162 @@ export default function MapScreen() {
       loadAllReviewStats(); // pre-load so "Best Rated" sort has data ready immediately
       logMapOpen(user?.id);
 
+      // Helper: reset any panel filters that were applied via Explore navigation (not user-set).
+      // Called when a new primary context replaces the previous one so stale panel state is cleared.
+      const resetNavPanelFilters = () => {
+        if (navRadiusMilesSetRef.current) {
+          navRadiusMilesSetRef.current = false;
+          setRadiusMiles(MAX_FILTER_RADIUS);
+          if (__DEV__) console.log('[MapContext] nav-applied radius reset (context switch)');
+        }
+        if (navOpenNowSetRef.current) {
+          navOpenNowSetRef.current = false;
+          setOpenNow(false);
+          if (__DEV__) console.log('[MapContext] nav-applied openNow reset (context switch)');
+        }
+      };
+
       // --- NEW CATEGORY FILTER from Explore chip tap OR product text search ---
+      // Guards: (1) nonce must exist, (2) paramsKey not already processed, (3) nonce not cleared.
+      // NOTE: !paramsStaleRef is intentionally ABSENT — a fresh nonce always trumps prior local
+      // actions. processedParamsRef alone prevents re-runs of the same nonce.
       if (params.mapFilterType && params.mapFilterProductTag) {
-        // Include searchNonce so the same category re-triggers after a user clears it
         const paramsKey = `${params.mapFilterType}-${params.mapFilterProductTag}-${params.searchNonce ?? '0'}`;
         const nonce = params.searchNonce ?? '0';
-        // All four conditions must pass to apply incoming Explore params:
-        // 1. params.searchNonce must exist — navigation without a nonce is never applied
-        // 2. paramsKey must differ from the last processed key — no double-apply
-        // 3. nonce must not match the locally cleared/staled nonce — user dismissed this chip
-        // 4. paramsStaleRef must be false — user hasn't searched/cleared since last apply
-        if (params.searchNonce && processedParamsRef.current !== paramsKey && nonce !== userClearedNonceRef.current && !paramsStaleRef.current) {
+        if (params.searchNonce && processedParamsRef.current !== paramsKey && nonce !== userClearedNonceRef.current) {
+          if (__DEV__) console.log('[MapContext] applying context | type: explore_category | tag:', params.mapFilterProductTag, '| nonce:', nonce, '| navRadius:', params.navRadiusMiles ?? '(none)');
           processedParamsRef.current = paramsKey;
           paramsStaleRef.current = false;
+          resetNavPanelFilters(); // clear any previous nav-applied panel filters
+          // Clear any previous primary context before applying the new one
+          setActiveCollectionIds(null);
+          setActiveCollectionLabel(null);
+          processedCollectionZoomRef.current = null;
           setMapFilter({ type: params.mapFilterType, productTag: params.mapFilterProductTag });
-          // Category chip is the sole visual indicator — always clear the search bar text
           setActiveSearchQuery('');
           setSearchDraftText('');
           processedSearchRef.current = null;
           clearSearch();
-          if (__DEV__) {
-            console.log('[Map] consumed incoming chip — tag:', params.mapFilterProductTag, '| nonce:', nonce);
+          if (params.navRadiusMiles) {
+            const parsedRadius = parseInt(params.navRadiusMiles, 10);
+            if (!isNaN(parsedRadius) && parsedRadius > 0 && parsedRadius <= MAX_FILTER_RADIUS) {
+              setRadiusMiles(parsedRadius);
+              navRadiusMilesSetRef.current = true;
+              if (__DEV__) console.log('[MapContext] nav radius applied:', parsedRadius, 'mi | anchor:', anchorLocation ? `${anchorLocation.latitude.toFixed(4)},${anchorLocation.longitude.toFixed(4)}` : '(none)');
+            }
           }
+        } else if (__DEV__) {
+          console.log('[MapContext] ignored stale nonce | type: explore_category | nonce:', nonce, '| reason:', processedParamsRef.current === paramsKey ? 'already-processed' : 'user-cleared');
         }
       }
 
       // --- NEW TEXT-ONLY SEARCH from Explore search bar ---
-      // When a new text query arrives without a category filter, it fully replaces previous state
-      // Include searchNonce so clearing and re-searching the same term always re-applies
-      const textSearchKey = params.search ? `${params.search}-${params.searchNonce ?? '0'}` : null;
-      if (params.search && !params.mapFilterType && textSearchKey !== processedSearchRef.current) {
+      // Guards: (1) no category filter in same nav, (2) key not already processed, (3) nonce not cleared.
+      // !paramsStaleRef intentionally absent — fresh nonce always wins.
+      const textNonce = params.searchNonce ?? '0';
+      const textSearchKey = params.search ? `${params.search}-${textNonce}` : null;
+      if (
+        params.search &&
+        !params.mapFilterType &&
+        textSearchKey !== processedSearchRef.current &&
+        textNonce !== userClearedNonceRef.current
+      ) {
+        if (__DEV__) console.log('[MapContext] applying context | type: explore_text | query:', params.search, '| nonce:', textNonce);
         processedSearchRef.current = textSearchKey;
         paramsStaleRef.current = false;
-        // Apply new search text immediately
+        resetNavPanelFilters(); // clear any previous nav-applied panel filters
+        // Clear any previous primary context before applying the new one
+        setMapFilter(null);
+        setActiveCollectionIds(null);
+        setActiveCollectionLabel(null);
+        processedParamsRef.current = null;
+        processedCollectionZoomRef.current = null;
         setSearchDraftText(params.search);
         setActiveSearchQuery(params.search);
-        // Clear any stale category filter — new search replaces it entirely
-        setMapFilter(null);
-        processedParamsRef.current = null;
-        // Allow initialSearch zoom effect to re-run for the new query
         initialSearchHandledRef.current = false;
+      } else if (params.search && textSearchKey === processedSearchRef.current && __DEV__) {
+        console.log('[MapContext] ignored stale nonce | type: explore_text | query:', params.search, '| nonce:', textNonce, '| reason: already-processed');
+      } else if (params.search && textNonce === userClearedNonceRef.current && __DEV__) {
+        console.log('[MapContext] ignored stale nonce | type: explore_text | query:', params.search, '| nonce:', textNonce, '| reason: user-cleared');
       }
 
-      // --- NO SEARCH PARAMS: returning to default state ---
-      if (!params.search && !params.mapFilterType) {
-        if (activeSearchQuery) {
+      // --- GENERIC COLLECTION from Explore "Show all" (Top Spots, New This Week, Most Saved, …) ---
+      // Guards: (1) key not already processed, (2) nonce not cleared.
+      // !paramsStaleRef intentionally absent — fresh nonce always wins.
+      if (params.collectionIds && params.collectionNonce && params.collectionLabel) {
+        const collectionNonce = params.collectionNonce;
+        const collectionKey = `collection-${collectionNonce}`;
+        if (processedParamsRef.current !== collectionKey && collectionNonce !== userClearedNonceRef.current) {
+          const ids = params.collectionIds.split(',').filter(Boolean);
+          if (ids.length > 0) {
+            if (__DEV__) console.log('[MapContext] applying context | type: explore_collection | label:', params.collectionLabel, '| ids:', ids.length, '| nonce:', collectionNonce);
+            processedParamsRef.current = collectionKey;
+            paramsStaleRef.current = false;
+            processedCollectionZoomRef.current = null;
+            resetNavPanelFilters(); // clear any previous nav-applied panel filters
+            // Clear any previous primary context before applying the new one
+            setMapFilter(null);
+            setActiveSearchQuery('');
+            setSearchDraftText('');
+            processedSearchRef.current = null;
+            clearSearch();
+            initialSearchHandledRef.current = true;
+            setActiveCollectionIds(ids);
+            setActiveCollectionLabel(params.collectionLabel);
+          }
+        } else if (__DEV__) {
+          console.log('[MapContext] ignored stale nonce | type: explore_collection | label:', params.collectionLabel, '| nonce:', collectionNonce, '| reason:', processedParamsRef.current === collectionKey ? 'already-processed' : 'user-cleared');
+        }
+      }
+
+      // --- OPEN NOW FILTER from Explore "Open Now → Show all" ---
+      // Activates the panel Open Now filter + a 25-mile radius. NOT a fixed ID collection —
+      // panning/zooming updates visible results from the live viewport pipeline.
+      // Guards: same pattern as category block — processedParamsRef + userClearedNonceRef.
+      if (params.navOpenNow === 'true' && params.openNowNonce) {
+        const openNowNonce = params.openNowNonce;
+        const openNowKey = `open_now-${openNowNonce}`;
+        if (processedParamsRef.current !== openNowKey && openNowNonce !== userClearedNonceRef.current) {
+          if (__DEV__) console.log('[MapContext] applying context | type: open_now_filter | nonce:', openNowNonce, '| navRadiusMiles:', params.navRadiusMiles ?? '25');
+          processedParamsRef.current = openNowKey;
+          paramsStaleRef.current = false;
+          resetNavPanelFilters(); // clear any previous nav-applied panel filters first
+          // Clear any previous primary context
+          setActiveCollectionIds(null);
+          setActiveCollectionLabel(null);
+          setMapFilter(null);
+          setActiveSearchQuery('');
+          setSearchDraftText('');
+          processedSearchRef.current = null;
+          processedCollectionZoomRef.current = null;
+          clearSearch();
+          initialSearchHandledRef.current = true;
+          // Activate Open Now panel filter
+          setOpenNow(true);
+          navOpenNowSetRef.current = true;
+          // Apply radius (default 25 miles if not specified)
+          const rawRadius = params.navRadiusMiles ? parseInt(params.navRadiusMiles, 10) : 25;
+          const parsedRadius = !isNaN(rawRadius) && rawRadius > 0 && rawRadius <= MAX_FILTER_RADIUS ? rawRadius : 25;
+          setRadiusMiles(parsedRadius);
+          navRadiusMilesSetRef.current = true;
+          if (__DEV__) console.log('[MapContext] open_now_filter applied | openNow: true | radius:', parsedRadius, 'mi | filterOpenNow will be:', true);
+        } else if (__DEV__) {
+          console.log('[MapContext] ignored stale nonce | type: open_now_filter | nonce:', openNowNonce, '| reason:', processedParamsRef.current === openNowKey ? 'already-processed' : 'user-cleared');
+        }
+      }
+
+      // --- NO SEARCH PARAMS: returning to Map tab with no active Explore navigation ---
+      // paramsStaleRef = true means the user has done a local action (typed, cleared) that owns
+      // the current context. Do NOT clear local state in that case.
+      if (!params.search && !params.mapFilterType && !params.collectionIds && !params.navOpenNow) {
+        if (__DEV__) console.log('[MapContext] active context summary | NO_SEARCH_PARAMS | paramsStaleRef:', paramsStaleRef.current, '| search:', activeSearchQuery || '(none)', '| mapFilter:', mapFilter ? mapFilter.productTag : '(none)', '| collection:', activeCollectionLabel ?? '(none)');
+        if (activeSearchQuery && !paramsStaleRef.current) {
+          if (__DEV__) console.log('[MapContext] clearing stale search | reason: no Explore params and paramsStaleRef=false');
           setSearchDraftText('');
           setActiveSearchQuery('');
           clearSearch();
         }
-        if (mapFilter) {
+        if (mapFilter && !paramsStaleRef.current) {
           setMapFilter(null);
         }
         processedParamsRef.current = null;
@@ -581,7 +743,7 @@ export default function MapScreen() {
     // IMPORTANT: Do NOT include searchDraftText, activeSearchQuery, or selectedFarmId in deps
     // This prevents the effect from clearing search while user is typing
     // selectedFarmId removed - selection should NOT be cleared by this effect
-    }, [loadAdminData, loadAllReviewStats, params.mapFilterType, params.mapFilterProductTag, params.search, params.searchNonce, mapFilter, clearSearch])
+    }, [loadAdminData, loadAllReviewStats, params.mapFilterType, params.mapFilterProductTag, params.search, params.searchNonce, params.collectionIds, params.collectionLabel, params.collectionNonce, params.navRadiusMiles, params.navOpenNow, params.openNowNonce, mapFilter, clearSearch, setRadiusMiles, setOpenNow])
   );
 
 
@@ -794,8 +956,16 @@ export default function MapScreen() {
   // Filter farms based on search query using search store results
   // When Supabase search is active, use those results; otherwise fall back to local filtering
   const searchFilteredFarms = useMemo(() => {
-    // If no active search query, return all farms (using baseFarmstands for instant rendering)
-    if (!activeSearchQuery.trim()) return baseFarmstands;
+    // If no active search query, return all farms (or the active collection subset)
+    if (!activeSearchQuery.trim()) {
+      if (activeCollectionIds !== null) {
+        const idSet = new Set(activeCollectionIds);
+        const filtered = baseFarmstands.filter((f) => idSet.has(f.id));
+        if (__DEV__) console.log('[TopSpots] collection scope:', filtered.length, '/', baseFarmstands.length, '| first5:', filtered.slice(0, 5).map((f) => f.id));
+        return filtered;
+      }
+      return baseFarmstands;
+    }
 
     // PRIORITY 1: If matchedFarmstandIds param is present (name search from Explore), use those directly.
     // Guard: skip when paramsStaleRef is true — means the user has done a new local search/clear
@@ -883,7 +1053,7 @@ export default function MapScreen() {
         return searchKeywords.every((word) => searchableText.includes(word));
       }
     });
-  }, [activeSearchQuery, baseFarmstands, isSearchActive, searchResults, params.matchedFarmstandIds, params.matchedFarmstandId, params.searchType]);
+  }, [activeSearchQuery, activeCollectionIds, baseFarmstands, isSearchActive, searchResults, params.matchedFarmstandIds, params.matchedFarmstandId, params.searchType]);
 
   // Filter farms based on mapFilter (category navigation from Explore tab)
   // Uses the unified category filter for consistent results
@@ -916,13 +1086,14 @@ export default function MapScreen() {
   // ── Advanced filters (rating, price, availability, category, saved) ──────
   const advancedFilteredFarms = useMemo(() => {
     let farms = mapFilteredFarms;
+    if (__DEV__) console.log('[FilterPipeline] base before advanced filters:', farms.length);
 
     // Rating — only include farmstands with at least 1 review AND avgRating >= threshold
     if (filterMinRating !== null) {
       const before = farms.length;
       farms = farms.filter((f) => {
-        const avg = typeof f.avgRating === 'number' ? f.avgRating : Number(f.avgRating ?? 0);
-        const count = f.reviewCount ?? 0;
+        const avg = Number(f.avg_rating ?? f.avgRating ?? 0);
+        const count = Number(f.review_count ?? f.reviewCount ?? 0);
         // Require at least 1 review; exclude unrated farmstands
         return count > 0 && avg >= filterMinRating;
       });
@@ -938,13 +1109,23 @@ export default function MapScreen() {
       }
     }
 
-    // Open Now
+    // Open Now — match the card badge exactly: badge shows "Open Now" when operatingStatus === 'open'
+    // (operatingStatus defaults to 'open' when unset, same as the badge logic on line ~1808)
     if (filterOpenNow) {
-      farms = farms.filter((f) => {
-        if (f.isOpen24_7) return true;
-        const { isOpenNow } = getHoursStatus(f.hoursData, f.isOpen);
-        return isOpenNow;
-      });
+      const before = farms.length;
+      if (__DEV__) {
+        const sampleBefore = farms.slice(0, 3).map((f) => ({
+          id: f.id, name: f.name,
+          operatingStatus: f.operatingStatus ?? '(unset→open)',
+          hoursData: f.hoursData ? 'has hours' : null,
+          badgeWouldShow: (f.operatingStatus ?? 'open') === 'open' ? 'Open Now' : f.operatingStatus,
+        }));
+        console.log('[OpenNowFilter] checking', before, 'farms | sample:', sampleBefore);
+      }
+      farms = farms.filter((f) => (f.operatingStatus ?? 'open') === 'open');
+      if (__DEV__) {
+        console.log('[OpenNowFilter] passed:', farms.length, '/', before);
+      }
     }
 
     // Has products listed
@@ -969,8 +1150,22 @@ export default function MapScreen() {
       farms = farms.filter((f) => favorites.has(f.id));
     }
 
+    // Distance radius — hard filter when user set < 100mi and we have an anchor location
+    if (filterRadiusMiles < MAX_FILTER_RADIUS && anchorLocation) {
+      const before = farms.length;
+      farms = farms.filter((f) => {
+        const dist = calculateDistance(
+          anchorLocation.latitude, anchorLocation.longitude,
+          f.latitude, f.longitude
+        );
+        return dist <= filterRadiusMiles;
+      });
+      if (__DEV__) console.log('[RadiusFilter] radius:', filterRadiusMiles, 'mi | passed:', farms.length, '/', before);
+    }
+
+    if (__DEV__) console.log('[FilterPipeline] advancedFilteredFarms:', farms.length, '| filterMinRating:', filterMinRating ?? 'off', '| first5:', farms.slice(0, 5).map((f) => f.id));
     return farms;
-  }, [mapFilteredFarms, filterMinRating, priceFilteredIds, filterOpenNow, filterInStockOnly, filterCategories, filterSavedOnly, favorites]);
+  }, [mapFilteredFarms, filterMinRating, filterRadiusMiles, priceFilteredIds, filterOpenNow, filterInStockOnly, filterCategories, filterSavedOnly, favorites, anchorLocation]);
 
   // Load all review stats when rating filter OR Best Rated sort is active
   useEffect(() => {
@@ -979,11 +1174,41 @@ export default function MapScreen() {
     }
   }, [filterMinRating, filterSortBy]);
 
-  // Whether any non-sort filter/search is active (controls viewport vs global scope)
+  // DEV: log Open Now toggle changes so the wiring is visible in Expo logs
+  useEffect(() => {
+    if (!__DEV__) return;
+    const openCount = baseFarmstands.filter((f) => (f.operatingStatus ?? 'open') === 'open').length;
+    console.log('[OpenNowFilter] filterOpenNow changed →', filterOpenNow,
+      '| baseFarmstands:', baseFarmstands.length,
+      '| would pass filter:', openCount,
+      '| sample operatingStatus (first 3):', baseFarmstands.slice(0, 3).map((f) => ({
+        id: f.id, name: f.name, operatingStatus: f.operatingStatus ?? '(unset→open)',
+      })));
+  }, [filterOpenNow]);
+
+  // DEV: log the active context whenever any primary context state changes
+  useEffect(() => {
+    if (!__DEV__) return;
+    const contextType = activeCollectionIds !== null ? 'explore_collection'
+      : mapFilter ? 'explore_category'
+      : activeSearchQuery ? 'search'
+      : 'normal_map_view';
+    console.log('[MapContext] active context summary | type:', contextType,
+      '| collection:', activeCollectionLabel ?? '(none)',
+      '| collectionIds:', activeCollectionIds?.length ?? 0,
+      '| category:', mapFilter?.productTag ?? '(none)',
+      '| search:', activeSearchQuery || '(none)',
+      '| paramsStale:', paramsStaleRef.current,
+      '| clearedNonce:', userClearedNonceRef.current ?? '(null)');
+  }, [activeSearchQuery, mapFilter, activeCollectionIds, activeCollectionLabel]);
+
+  // Whether a text search, Explore category nav, or curated collection is active.
+  // These bypass viewport restriction so all matches are visible globally.
+  // Panel filter chips (Open Now, rating, price, radius, etc.) intentionally do NOT set this flag —
+  // they must AND with the current viewport, not bypass it and show all global matches.
   const isFilterActive = useMemo(() => {
-    const nonSortFilterCount = filterActiveCount - (filterSortBy !== 'relevance' ? 1 : 0);
-    return !!(activeSearchQuery.trim() || mapFilter || nonSortFilterCount > 0);
-  }, [activeSearchQuery, mapFilter, filterActiveCount, filterSortBy]);
+    return !!(activeSearchQuery.trim() || mapFilter || activeCollectionIds !== null);
+  }, [activeSearchQuery, mapFilter, activeCollectionIds]);
 
   // ── SINGLE SOURCE OF TRUTH ─────────────────────────────────────────────────
   // ALL tray cards, count label, and search results come from this one array.
@@ -992,11 +1217,12 @@ export default function MapScreen() {
     const centerLat = anchorLocation?.latitude ?? visibleRegion.latitude;
     const centerLng = anchorLocation?.longitude ?? visibleRegion.longitude;
 
-    // When a real filter/search is active: show all matches globally.
-    // When sort-only (or no filter): restrict to the visible map viewport.
+    // When a text search or Explore category nav is active: show all matches globally.
+    // All other cases (panel filters, no filter, sort-only): restrict to the visible map viewport.
     const base: ExtendedFarmStand[] = isFilterActive
       ? [...advancedFilteredFarms]
       : advancedFilteredFarms.filter((f) => isFarmInViewport(f, visibleRegion));
+    if (__DEV__) console.log('[FilterPipeline] after viewport/area filter:', base.length, '| isFilterActive:', isFilterActive);
 
     let sorted: ExtendedFarmStand[];
 
@@ -1022,8 +1248,9 @@ export default function MapScreen() {
       sorted = getRelevanceSortedFarms(base, centerLat, centerLng);
     }
 
+    if (__DEV__) console.log('[PinSync] finalVisibleFarmstands (cards/count):', sorted.length, '| filterMinRating:', filterMinRating ?? 'off', '| first5:', sorted.slice(0, 5).map((f) => f.id));
     return sorted;
-  }, [advancedFilteredFarms, visibleRegion, filterSortBy, isFilterActive, anchorLocation]);
+  }, [advancedFilteredFarms, visibleRegion, filterSortBy, isFilterActive, anchorLocation, filterMinRating]);
 
   // Backward-compat alias — all existing JSX that referenced visibleFarmstands now uses the sorted array
   const visibleFarmstands = finalVisibleFarmstands;
@@ -1071,15 +1298,15 @@ export default function MapScreen() {
   // Based on pinnedFarmstand — only set/cleared by explicit user action, never by effects/memos
   const isPinSelected = Boolean(pinnedFarmstand);
 
-  // Pins to show on map - when filter/search is active, show only filtered results
-  // When no filter, show all farmstands for instant visibility
-  // NOTE: pin logic is NOT affected by sort order — do NOT change this
+  // Pins to show on map — always derived from advancedFilteredFarms so panel filters
+  // (rating, openNow, price, categories, etc.) remove non-matching pins immediately.
+  // When no filters are active, advancedFilteredFarms ≡ baseFarmstands so the
+  // Airbnb-style all-pins behavior is preserved.
+  // NOTE: pin logic is NOT affected by sort order — do NOT change this.
   const pinsToShow = useMemo(() => {
-    if (isFilterActive) {
-      return advancedFilteredFarms;
-    }
-    return baseFarmstands;
-  }, [isFilterActive, advancedFilteredFarms, baseFarmstands]);
+    if (__DEV__) console.log('[PinSync] pinsToShow (marker array):', advancedFilteredFarms.length, '| filterMinRating:', filterMinRating ?? 'off', '| first5:', advancedFilteredFarms.slice(0, 5).map((f) => f.id));
+    return advancedFilteredFarms;
+  }, [advancedFilteredFarms, filterMinRating]);
 
   // Debounce map-pin updates while the filter modal is open.
   // Without this, each chip tap immediately destroys/recreates all native Marker components
@@ -1089,12 +1316,16 @@ export default function MapScreen() {
   const [stablePins, setStablePins] = useState<ExtendedFarmStand[]>(() => pinsToShow);
   useEffect(() => {
     if (!showFilterModal) {
+      if (__DEV__) console.log('[PinSync] stablePins→actual rendered markers:', pinsToShow.length, '| finalVisible (cards/count):', finalVisibleFarmstands.length, '| first5:', pinsToShow.slice(0, 5).map((f) => f.id));
       setStablePins(pinsToShow);
       return;
     }
-    const t = setTimeout(() => setStablePins(pinsToShow), 150);
+    const t = setTimeout(() => {
+      if (__DEV__) console.log('[PinSync] stablePins→actual rendered markers (debounced):', pinsToShow.length, '| finalVisible (cards/count):', finalVisibleFarmstands.length, '| first5:', pinsToShow.slice(0, 5).map((f) => f.id));
+      setStablePins(pinsToShow);
+    }, 150);
     return () => clearTimeout(t);
-  }, [pinsToShow, showFilterModal]);
+  }, [pinsToShow, showFilterModal, finalVisibleFarmstands.length]);
 
   // Calculate content-aware expanded height based on what will be shown
   const EXPANDED_HEIGHT = useMemo(() => {
@@ -1231,7 +1462,9 @@ export default function MapScreen() {
     }, 100); // Small delay to let results settle
 
     return () => clearTimeout(timer);
-  }, [searchFilteredFarms.length, activeSearchQuery, snapToState, isSearchFocused]);
+  // isSearchActive added: re-zoom when Supabase results arrive (local Priority-4 and Supabase
+  // Priority-3 may return the same count but different farms at different coordinates)
+  }, [searchFilteredFarms.length, activeSearchQuery, isSearchActive, snapToState, isSearchFocused]);
 
   // Zoom map to fit all filtered farms when mapFilter changes (category navigation)
   useEffect(() => {
@@ -1265,6 +1498,79 @@ export default function MapScreen() {
 
     return () => clearTimeout(timer);
   }, [mapFilter, mapFilteredFarms, snapToState]);
+
+  // Zoom map to show all farms in the active collection when it is first applied.
+  // Uses processedCollectionZoomRef so the zoom only fires once per collection, even if
+  // baseFarmstands loads asynchronously after the collection IDs arrive.
+  useEffect(() => {
+    if (!activeCollectionIds || searchFilteredFarms.length === 0) return;
+    const key = activeCollectionIds.join(',');
+    if (processedCollectionZoomRef.current === key) return;
+    processedCollectionZoomRef.current = key;
+
+    if (__DEV__) console.log('[TopSpots] auto-zoom to', searchFilteredFarms.length, 'collection farms | first5:', searchFilteredFarms.slice(0, 5).map((f) => f.id));
+
+    const timer = setTimeout(() => {
+      const coordinates = searchFilteredFarms.map((f) => ({ latitude: f.latitude, longitude: f.longitude }));
+      isProgrammaticAnimation.current = true;
+      if (coordinates.length === 1) {
+        mapRef.current?.animateToRegion({
+          latitude: coordinates[0].latitude,
+          longitude: coordinates[0].longitude,
+          latitudeDelta: 0.1,
+          longitudeDelta: 0.1,
+        }, 500);
+      } else {
+        mapRef.current?.fitToCoordinates(coordinates, {
+          edgePadding: { top: 80, right: 60, bottom: 220, left: 60 },
+          animated: true,
+        });
+      }
+      snapToState('expanded');
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [activeCollectionIds, searchFilteredFarms, snapToState]);
+
+  // Called by MapFilterModal when the user presses "Show X Farmstands" (not swipe-to-close).
+  // Sets a ref so the auto-zoom effect below can distinguish CTA close from cancel close.
+  const handleFilterApplyIntent = useCallback(() => {
+    filterJustApplied.current = true;
+    if (__DEV__) console.log('[FilterApply] CTA pressed — will auto-zoom to', advancedFilteredFarms.length, 'farms on modal close');
+  }, [advancedFilteredFarms.length]);
+
+  // Auto-zoom the map to fit all filtered farms when the filter modal CTA was pressed.
+  // Only fires when showFilterModal transitions to false AND filterJustApplied = true.
+  // Does not fire on swipe-to-close so the viewport isn't disturbed on accidental dismissal.
+  useEffect(() => {
+    if (showFilterModal || !filterJustApplied.current) return;
+    filterJustApplied.current = false;
+
+    const farms = advancedFilteredFarms;
+    // Only zoom if filtering meaningfully reduced the set (skip if no active filter)
+    if (farms.length === 0 || farms.length >= baseFarmstands.length) {
+      if (__DEV__) console.log('[FilterApply] skipping auto-zoom | farms:', farms.length, '| base:', baseFarmstands.length);
+      return;
+    }
+
+    if (__DEV__) console.log('[FilterApply] auto-zoom to', farms.length, 'filtered farms | first5:', farms.slice(0, 5).map((f) => f.id));
+
+    const coordinates = farms.map((f) => ({ latitude: f.latitude, longitude: f.longitude }));
+    isProgrammaticAnimation.current = true;
+    if (coordinates.length === 1) {
+      mapRef.current?.animateToRegion({
+        latitude: coordinates[0].latitude,
+        longitude: coordinates[0].longitude,
+        latitudeDelta: 0.05,
+        longitudeDelta: 0.05,
+      }, 500);
+    } else {
+      mapRef.current?.fitToCoordinates(coordinates, {
+        edgePadding: { top: 80, right: 60, bottom: 220, left: 60 },
+        animated: true,
+      });
+    }
+    snapToState('expanded');
+  }, [showFilterModal, advancedFilteredFarms, baseFarmstands.length, snapToState]);
 
   // Handle initial search navigation from Explore (runs once when search params are present)
   useEffect(() => {
@@ -1548,6 +1854,10 @@ export default function MapScreen() {
 
   // Track if map animation was triggered programmatically (e.g., by marker press)
   const isProgrammaticAnimation = useRef(false);
+
+  // True when the user pressed "Show X Farmstands" CTA in the filter modal (vs swipe-to-close).
+  // Consumed by the auto-zoom effect below to fit the map to filtered results.
+  const filterJustApplied = useRef(false);
 
   const handleRegionChangeComplete = useCallback((region: Region) => {
     // Always update visible region - render priority handles the flash issue
@@ -1956,17 +2266,21 @@ export default function MapScreen() {
             onChangeText={(text) => {
               setSearchDraftText(text);
               if (text.trim().length > 0) {
-                // Any keystroke permanently stales the current Explore nonce — both guards
-                // (paramsStaleRef + userClearedNonceRef) are set unconditionally so that
-                // useFocusEffect cannot reapply the old chip regardless of mapFilter state.
+                // Any keystroke owns the context — mark all active Explore params as stale.
+                // Use the most specific active nonce (collection > search) so the right guard
+                // is set in useFocusEffect.
+                const activeNonce = params.collectionNonce ?? params.searchNonce ?? '0';
                 paramsStaleRef.current = true;
-                userClearedNonceRef.current = params.searchNonce ?? '0';
-                // Typed text also takes priority over any active category chip
+                userClearedNonceRef.current = activeNonce;
+                // Typing clears any active primary context immediately
                 if (mapFilter) {
                   setMapFilter(null);
-                  if (__DEV__) {
-                    console.log('[Map] typing cleared chip — filter source: typed-search | consuming nonce:', params.searchNonce ?? '0', '| draft:', text.trim().slice(0, 30));
-                  }
+                  if (__DEV__) console.log('[MapContext] typing cleared category chip | nonce:', activeNonce, '| draft:', text.trim().slice(0, 30));
+                }
+                if (activeCollectionIds !== null) {
+                  setActiveCollectionIds(null);
+                  setActiveCollectionLabel(null);
+                  if (__DEV__) console.log('[MapContext] typing cleared collection chip | label:', activeCollectionLabel, '| nonce:', activeNonce, '| draft:', text.trim().slice(0, 30));
                 }
               }
             }}
@@ -1980,9 +2294,9 @@ export default function MapScreen() {
               if (trimmed) trackEvent('map_search_submitted', { query: trimmed, query_length: trimmed.length });
 
               // Full state reset — new search always fully replaces old search.
-              // clearAllMapFilters sets paramsStaleRef, userClearedNonceRef, processedParamsRef,
+              // clearPrimaryMapContext sets paramsStaleRef, userClearedNonceRef, processedParamsRef,
               // processedSearchRef, initialSearchHandledRef, and clears all search/filter state.
-              clearAllMapFilters('typed-search-submit');
+              clearPrimaryMapContext('typed-search-submit');
               pinnedFarmstandRef.current = null;
               setPinnedFarmstand(null);
               setSelectedFarmId(null);
@@ -1998,14 +2312,14 @@ export default function MapScreen() {
               const categoryKey = detectCategoryFromQuery(trimmed);
               if (categoryKey) {
                 // Category/product search — chip is the sole visual indicator.
-                // paramsStaleRef (set by clearAllMapFilters above) keeps old Explore params from
+                // paramsStaleRef (set by clearPrimaryMapContext above) keeps old Explore params from
                 // resurging via useFocusEffect. Never reset userClearedNonceRef here — doing so
                 // would re-open the window for a previously cleared Explore chip to reapply.
                 setMapFilter({ type: 'category', productTag: categoryKey });
                 setActiveSearchQuery('');
                 setSearchDraftText('');  // search bar stays empty; chip shows the active filter
                 if (__DEV__) {
-                  console.log('[Map] typed search resolved to chip — filter source: chip | tag:', categoryKey, '| query:', trimmed);
+                  console.log('[MapContext] applying context | type: local_map_category | tag:', categoryKey, '| query:', trimmed);
                 }
                 snapToState('expanded');
                 return;
@@ -2013,9 +2327,11 @@ export default function MapScreen() {
 
               // Non-category: text/name/location search
               if (__DEV__) {
-                console.log('[Map] typed search submitted — filter source: typed-search | query:', trimmed);
+                console.log('[MapContext] applying context | type: local_map_text_search | query:', trimmed);
               }
               setMapFilter(null);
+              // clearPrimaryMapContext cleared searchDraftText=''; restore it so the bar stays populated
+              setSearchDraftText(trimmed);
               setActiveSearchQuery(trimmed);
               snapToState('expanded');
             }}
@@ -2028,8 +2344,14 @@ export default function MapScreen() {
           {searchDraftText.length > 0 && !isSearching && (
             <Pressable
               onPress={() => {
+                if (__DEV__) {
+                  console.log('[Map] X clear pressed — draft:', searchDraftText,
+                    '| active query:', activeSearchQuery,
+                    '| route param search:', params.search ?? '(none)',
+                    '| nonce:', params.searchNonce ?? '(none)');
+                }
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                clearAllMapFilters('clear-button');
+                clearPrimaryMapContext('clear-button');
                 snapToState('collapsed');
                 pinnedFarmstandRef.current = null;
                 setPinnedFarmstand(null);
@@ -2068,9 +2390,31 @@ export default function MapScreen() {
                 onPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   if (__DEV__) {
-                    console.log('[Map] chip cleared — tag:', mapFilter?.productTag, '| consuming nonce:', params.searchNonce ?? '0');
+                    console.log('[MapContext] user cleared category chip | tag:', mapFilter?.productTag, '| nonce:', params.searchNonce ?? '0');
                   }
-                  clearAllMapFilters('chip-x-pressed');
+                  clearPrimaryMapContext('chip-x-pressed');
+                  pinnedFarmstandRef.current = null;
+                  setPinnedFarmstand(null);
+                  setSelectedFarmId(null);
+                }}
+                style={styles.filterChipClose}
+              >
+                <X size={14} color="#FFFFFF" />
+              </Pressable>
+            </View>
+          </View>
+        )}
+
+        {/* Active Collection Chip (e.g. Top Spots For You) */}
+        {activeCollectionIds !== null && activeCollectionLabel && (
+          <View style={styles.filterChipContainer}>
+            <View style={styles.filterChip}>
+              <Text style={styles.filterChipText}>{activeCollectionLabel}</Text>
+              <Pressable
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  if (__DEV__) console.log('[MapContext] user cleared collection chip | label:', activeCollectionLabel, '| nonce:', params.collectionNonce ?? '0');
+                  clearPrimaryMapContext('collection-chip-x');
                   pinnedFarmstandRef.current = null;
                   setPinnedFarmstand(null);
                   setSelectedFarmId(null);
@@ -2231,7 +2575,7 @@ export default function MapScreen() {
                   <Pressable
                     onPress={() => {
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      clearAllMapFilters('empty-state-clear');
+                      clearPrimaryMapContext('empty-state-clear');
                       snapToState('collapsed');
                       pinnedFarmstandRef.current = null;
                       setPinnedFarmstand(null);
@@ -2268,6 +2612,7 @@ export default function MapScreen() {
       <MapFilterModal
         visible={showFilterModal}
         onClose={() => setShowFilterModal(false)}
+        onApply={handleFilterApplyIntent}
         onSliderChange={handleRadiusChangeWithZoom}
         resultCount={finalVisibleFarmstands.length}
       />

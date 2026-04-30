@@ -1,6 +1,7 @@
 import { create } from 'zustand';
+import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { supabase, isSupabaseConfigured, loadSessionFromStorage, getValidSession } from './supabase';
+import { supabase, isSupabaseConfigured } from './supabase';
 import { useUserStore } from './user-store';
 
 type OnSaveCallback = (farmstandId: string, isSaving: boolean) => void;
@@ -8,9 +9,17 @@ type OnSaveCallback = (farmstandId: string, isSaving: boolean) => void;
 const isUuid = (v?: string | null): boolean =>
   !!v && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 
-const backendUrl = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
+const log = (...args: unknown[]) => { if (__DEV__) console.log('[FAVORITES]', ...args); };
 
-const log = (...args: unknown[]) => console.log('[FAVORITES]', ...args);
+type ToggleFavoriteRpcResult = {
+  success: boolean;
+  is_saved?: boolean;
+  favorites?: string[];
+  // Failure fields — all three present on every error path
+  error?: string;
+  code?: string;
+  details?: string;
+};
 
 interface FavoritesState {
   favorites: Set<string>;
@@ -51,7 +60,7 @@ export const useFavoritesStore = create<FavoritesState>((set, get) => ({
     newInFlight.add(id);
     set({ version: v, inFlight: newInFlight });
 
-    // Optimistic update
+    // Optimistic update — applied immediately so UI is instant
     const optimisticFavorites = new Set(get().favorites);
     if (wasAlreadySaved) {
       optimisticFavorites.delete(id);
@@ -64,103 +73,148 @@ export const useFavoritesStore = create<FavoritesState>((set, get) => ({
     const user = useUserStore.getState().user;
     const userId = user?.id;
 
-    if (isUuid(userId) && isSupabaseConfigured()) {
-      await loadSessionFromStorage();
-      const session = await getValidSession();
+    log('ATTEMPT', {
+      userId: userId ?? '(no user)',
+      farmstandId: id,
+      action: isSaving ? 'save' : 'unsave',
+      timestamp: Date.now(),
+    });
 
-      if (!session?.access_token) {
-        log('STORE_WRITE', { source: 'revert_no_session', favorites: Array.from(favorites), version: v, timestamp: Date.now() });
-        const ri = new Set(get().inFlight); ri.delete(id);
-        set({ favorites: new Set(favorites), inFlight: ri });
-        return;
-      }
-
-      const requestId = Math.random().toString(36).slice(2);
-      log('REQUEST_START', {
-        requestId,
-        farmstandId: id,
-        action: wasAlreadySaved ? 'unsave' : 'save',
-        currentFavorites: Array.from(get().favorites),
-        version: v,
-        timestamp: Date.now(),
-      });
-
-      try {
-        const resp = await fetch(`${backendUrl}/api/favorites/toggle`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify({ farmstand_id: id, action: wasAlreadySaved ? 'unsave' : 'save' }),
-        });
-
-        const fct = resp.headers.get('content-type') ?? '';
-        if (!fct.includes('application/json')) {
-          console.log('[FAVORITES] Non-JSON response from favorites/toggle (HTTP', resp.status, '), content-type:', fct);
-          const ri = new Set(get().inFlight); ri.delete(id);
-          set({ favorites: new Set(favorites), inFlight: ri });
-          return;
-        }
-        const result = (await resp.json()) as { success: boolean; favorites: string[]; error?: string };
-        const returnedIds = result.favorites ?? [];
-
-        const fi = new Set(get().inFlight); fi.delete(id);
-        const currentVersion = get().version;
-
-        if (!result.success) {
-          log('REQUEST_ERROR', { requestId, farmstandId: id, error: result.error ?? 'unknown', responseVersion: v, currentVersion, timestamp: Date.now() });
-          if (currentVersion === v) {
-            log('STORE_WRITE', { source: 'revert_backend_fail', favorites: Array.from(favorites), version: v, timestamp: Date.now() });
-            set({ favorites: new Set(favorites), inFlight: fi });
-          } else {
-            set({ inFlight: fi });
-          }
-          return;
-        }
-
-        log('REQUEST_SUCCESS', { requestId, farmstandId: id, returnedIds, responseVersion: v, currentVersion, timestamp: Date.now() });
-
-        if (currentVersion === v) {
-          const serverFavorites = new Set(returnedIds);
-          log('STORE_WRITE', { source: 'toggle', favorites: Array.from(serverFavorites), version: v, timestamp: Date.now() });
-          set({ favorites: serverFavorites, isLoaded: true, inFlight: fi });
-
-          if (isSaving && !serverFavorites.has(id)) {
-            log('VALIDATION_FAIL', { type: 'SAVE_NOT_IN_RESPONSE', farmstandId: id, returnedIds });
-          }
-          if (!isSaving && serverFavorites.has(id)) {
-            log('VALIDATION_FAIL', { type: 'UNSAVE_STILL_IN_RESPONSE', farmstandId: id, returnedIds });
-          }
-        } else {
-          log('STORE_WRITE_SKIPPED', { reason: 'stale_response', responseVersion: v, currentVersion, farmstandId: id, timestamp: Date.now() });
-          set({ inFlight: fi });
-        }
-      } catch (e) {
-        const errMsg = e instanceof Error ? e.message : String(e);
-        log('REQUEST_ERROR', { requestId, farmstandId: id, error: errMsg, timestamp: Date.now() });
-        const ri = new Set(get().inFlight); ri.delete(id);
-        if (get().version === v) {
-          log('STORE_WRITE', { source: 'revert_exception', favorites: Array.from(favorites), version: v, timestamp: Date.now() });
-          set({ favorites: new Set(favorites), inFlight: ri });
-        } else {
-          set({ inFlight: ri });
-        }
-      }
-
-      // Fire-and-forget save count refresh — outside the try/catch so it
-      // CANNOT trigger the revert handler if it throws.
-      try {
-        const { useExploreStore } = await import('./explore-store');
-        useExploreStore.getState().loadSaveCounts();
-      } catch (countErr) {
-        log('LOAD_SAVE_COUNTS_ERROR', { error: String(countErr) });
-      }
-    } else {
+    // Guest / unauthenticated: keep optimistic local state, no server call
+    if (!isUuid(userId)) {
       log('UNAUTHENTICATED', { farmstandId: id, timestamp: Date.now() });
       const gi = new Set(get().inFlight); gi.delete(id);
       set({ inFlight: gi });
       AsyncStorage.setItem('farmstand-favorites', JSON.stringify([...optimisticFavorites]));
+      return;
+    }
+
+    if (!isSupabaseConfigured()) {
+      log('SUPABASE_NOT_CONFIGURED', { farmstandId: id, timestamp: Date.now() });
+      const gi = new Set(get().inFlight); gi.delete(id);
+      set({ favorites: new Set(favorites), inFlight: gi });
+      return;
+    }
+
+    try {
+      // Use a SECURITY DEFINER RPC so FK constraint check (which needs SELECT on
+      // farmstands) doesn't block the authenticated role — no backend needed.
+      const { data: rpcData, error: rpcError } = await supabase.rpc<ToggleFavoriteRpcResult>(
+        'toggle_favorite',
+        { p_farmstand_id: id }
+      );
+
+      const fi = new Set(get().inFlight); fi.delete(id);
+      const currentVersion = get().version;
+
+      if (rpcError) {
+        const errCode    = (rpcError as { code?: string }).code ?? '(no code)';
+        const errDetails = (rpcError as { details?: string }).details ?? '(no details)';
+        log('RPC_ERROR', {
+          farmstandId: id,
+          code:    errCode,
+          message: rpcError.message,
+          details: errDetails,
+          responseVersion: v,
+          currentVersion,
+          timestamp: Date.now(),
+        });
+        if (__DEV__) {
+          Alert.alert(
+            '[DEV] Favorites HTTP error',
+            `error:   ${rpcError.message}\ncode:    ${errCode}\ndetails: ${errDetails}`
+          );
+        }
+        if (currentVersion === v) {
+          log('STORE_WRITE', { source: 'revert_rpc_error', favorites: Array.from(favorites), version: v, timestamp: Date.now() });
+          set({ favorites: new Set(favorites), inFlight: fi });
+        } else {
+          set({ inFlight: fi });
+        }
+        return;
+      }
+
+      // rpcData is the JSON object returned by the function.
+      // Cast carefully — it may be null (empty 204 body) or a mis-shaped object.
+      const result = rpcData as ToggleFavoriteRpcResult | null;
+
+      if (!result?.success) {
+        const errMsg     = result?.error   ?? '(no error field)';
+        const errCode    = result?.code    ?? '(no code)';
+        const errDetails = result?.details ?? '(no details)';
+        const rawJson    = JSON.stringify(rpcData);
+        log('RPC_FAIL', {
+          farmstandId: id,
+          error:   errMsg,
+          code:    errCode,
+          details: errDetails,
+          raw:     rawJson,
+          responseVersion: v,
+          currentVersion,
+          timestamp: Date.now(),
+        });
+        if (__DEV__) {
+          Alert.alert(
+            '[DEV] Favorites RPC returned success=false',
+            `error:   ${errMsg}\ncode:    ${errCode}\ndetails: ${errDetails}\n\nraw: ${rawJson}`
+          );
+        }
+        if (currentVersion === v) {
+          log('STORE_WRITE', { source: 'revert_rpc_fail', favorites: Array.from(favorites), version: v, timestamp: Date.now() });
+          set({ favorites: new Set(favorites), inFlight: fi });
+        } else {
+          set({ inFlight: fi });
+        }
+        return;
+      }
+
+      const returnedIds: string[] = Array.isArray(result.favorites) ? result.favorites : [];
+      log('RPC_SUCCESS', {
+        farmstandId: id,
+        action: isSaving ? 'save' : 'unsave',
+        isSaved: result.is_saved,
+        returnedIds,
+        responseVersion: v,
+        currentVersion,
+        timestamp: Date.now(),
+      });
+
+      if (isSaving && !returnedIds.includes(id)) {
+        log('VALIDATION_FAIL', { type: 'SAVE_NOT_IN_RESPONSE', farmstandId: id, returnedIds });
+      }
+      if (!isSaving && returnedIds.includes(id)) {
+        log('VALIDATION_FAIL', { type: 'UNSAVE_STILL_IN_RESPONSE', farmstandId: id, returnedIds });
+      }
+
+      if (currentVersion === v) {
+        const serverFavorites = new Set(returnedIds);
+        log('STORE_WRITE', { source: 'rpc_success', favorites: Array.from(serverFavorites), version: v, timestamp: Date.now() });
+        set({ favorites: serverFavorites, isLoaded: true, inFlight: fi });
+      } else {
+        log('STORE_WRITE_SKIPPED', { reason: 'stale_response', responseVersion: v, currentVersion, farmstandId: id, timestamp: Date.now() });
+        set({ inFlight: fi });
+      }
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      log('EXCEPTION', { farmstandId: id, error: errMsg, timestamp: Date.now() });
+      if (__DEV__ && errMsg.includes('AUTH_REQUIRED')) {
+        Alert.alert('[DEV] Favorites: No valid session', 'Session expired or missing. User must sign in again.');
+      }
+      const ri = new Set(get().inFlight); ri.delete(id);
+      if (get().version === v) {
+        log('STORE_WRITE', { source: 'revert_exception', favorites: Array.from(favorites), version: v, timestamp: Date.now() });
+        set({ favorites: new Set(favorites), inFlight: ri });
+      } else {
+        set({ inFlight: ri });
+      }
+    }
+
+    // Fire-and-forget save count refresh — OUTSIDE try/catch so it cannot trigger revert
+    try {
+      const { useExploreStore } = await import('./explore-store');
+      useExploreStore.getState().loadSaveCounts();
+    } catch (countErr) {
+      log('LOAD_SAVE_COUNTS_ERROR', { error: String(countErr) });
     }
 
     if (isSaving && onSaveCallback) {
@@ -185,6 +239,7 @@ export const useFavoritesStore = create<FavoritesState>((set, get) => ({
           .from<{ farmstand_id: string }>('saved_farmstands')
           .select('farmstand_id')
           .eq('user_id', userId!)
+          .requireAuth()
           .execute();
 
         if (error) {

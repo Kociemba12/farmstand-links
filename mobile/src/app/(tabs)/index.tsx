@@ -18,6 +18,7 @@ import {
   ChevronRight,
   Navigation,
   WifiOff,
+  Plus,
 } from 'lucide-react-native';
 import Animated, {
   FadeInDown,
@@ -448,6 +449,60 @@ function FarmstandCard({
   );
 }
 
+// Add Farmstand CTA Card — appended at the end of each carousel
+interface AddFarmstandCTACardProps {
+  onPress: () => void;
+  variant?: 'large' | 'small';
+  overrideWidth?: number;
+}
+
+function AddFarmstandCTACard({ onPress, variant = 'small', overrideWidth }: AddFarmstandCTACardProps) {
+  const { width: dynWidth } = useWindowDimensions();
+  const isDynTablet = dynWidth >= 768;
+  const cardWidth = overrideWidth ?? (isDynTablet
+    ? Math.round(dynWidth * (variant === 'large' ? 0.52 : 0.46))
+    : (variant === 'large' ? CARD_WIDTH : SMALL_CARD_WIDTH));
+  const cardHeight = cardWidth;
+
+  return (
+    <View style={{ width: cardWidth, marginRight: overrideWidth ? 0 : 16, marginBottom: overrideWidth ? 0 : 4 }}>
+      <Pressable onPress={onPress} style={{ width: '100%' }}>
+        <LinearGradient
+          colors={['#2D5A3D', '#4A7C5F']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={{
+            width: cardWidth,
+            height: cardHeight,
+            borderRadius: 16,
+            justifyContent: 'center',
+            alignItems: 'center',
+            padding: 20,
+          }}
+        >
+          <View style={{
+            width: 44,
+            height: 44,
+            borderRadius: 22,
+            backgroundColor: 'rgba(255,255,255,0.2)',
+            justifyContent: 'center',
+            alignItems: 'center',
+            marginBottom: 14,
+          }}>
+            <Plus size={24} color="#FFFFFF" strokeWidth={2.5} />
+          </View>
+          <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '700', textAlign: 'center', marginBottom: 6 }}>
+            Know a farmstand?
+          </Text>
+          <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 13, textAlign: 'center', lineHeight: 18 }}>
+            Add it in 30 seconds
+          </Text>
+        </LinearGradient>
+      </Pressable>
+    </View>
+  );
+}
+
 // Section Header Component
 interface SectionHeaderProps {
   title: string;
@@ -484,6 +539,7 @@ interface TopSpotsCarouselProps {
   onToggleFavorite: (id: string) => void;
   numCols?: number;
   colWidth?: number;
+  onAddFarmstand?: () => void;
 }
 
 function TopSpotsCarousel({
@@ -495,6 +551,7 @@ function TopSpotsCarousel({
   onToggleFavorite,
   numCols = 1,
   colWidth = 0,
+  onAddFarmstand,
 }: TopSpotsCarouselProps) {
   const listRef = useRef<FlatList>(null);
   const { width: dynWidth } = useWindowDimensions();
@@ -558,6 +615,11 @@ function TopSpotsCarousel({
             ))}
           </View>
         ))}
+        {onAddFarmstand && (
+          <View style={{ flexDirection: 'row', gap: 12, marginBottom: 12 }}>
+            <AddFarmstandCTACard onPress={onAddFarmstand} variant="large" overrideWidth={colWidth} />
+          </View>
+        )}
       </View>
     );
   }
@@ -584,6 +646,7 @@ function TopSpotsCarousel({
           />
         );
       }}
+      ListFooterComponent={onAddFarmstand ? <AddFarmstandCTACard onPress={onAddFarmstand} variant="large" /> : null}
       showsHorizontalScrollIndicator={false}
       removeClippedSubviews={false}
       initialNumToRender={6}
@@ -607,6 +670,7 @@ interface HorizontalFarmstandListProps {
   resetKey?: number; // increment to force scroll reset
   numCols?: number;
   colWidth?: number;
+  onAddFarmstand?: () => void;
 }
 
 function HorizontalFarmstandList({
@@ -621,6 +685,7 @@ function HorizontalFarmstandList({
   resetKey,
   numCols = 1,
   colWidth = 0,
+  onAddFarmstand,
 }: HorizontalFarmstandListProps) {
   const listRef = useRef<FlatList>(null);
   const { width: dynWidth } = useWindowDimensions();
@@ -661,6 +726,11 @@ function HorizontalFarmstandList({
             ))}
           </View>
         ))}
+        {onAddFarmstand && (
+          <View style={{ flexDirection: 'row', gap: 12, marginBottom: 12 }}>
+            <AddFarmstandCTACard onPress={onAddFarmstand} variant={variant} overrideWidth={colWidth} />
+          </View>
+        )}
       </View>
     );
   }
@@ -683,6 +753,7 @@ function HorizontalFarmstandList({
           variant={variant}
         />
       )}
+      ListFooterComponent={onAddFarmstand ? <AddFarmstandCTACard onPress={onAddFarmstand} variant={variant} /> : null}
       showsHorizontalScrollIndicator={false}
       removeClippedSubviews={false}
       initialNumToRender={6}
@@ -1082,14 +1153,14 @@ const [focusResetKey, setFocusResetKey] = useState(0);
     });
   };
 
-  const handleCategoryPress = (category: string, label: string) => {
+  const handleCategoryPress = (category: string, label: string, radiusMiles?: number) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     // Log product chip tap to analytics
     logProductChipTap(category, user?.id);
     trackEvent('explore_category_selected', { category: label || category });
     const nonce = Date.now().toString();
     if (__DEV__) {
-      console.log('[Explore] chip passed to Map — tag:', category, '| label:', label || category, '| nonce:', nonce);
+      console.log('[Explore] chip passed to Map — tag:', category, '| label:', label || category, '| nonce:', nonce, radiusMiles != null ? `| navRadiusMiles: ${radiusMiles}` : '');
     }
     // Navigate to Map tab with mapFilter param for category-based filtering
     // Pass the category KEY (e.g., "eggs", "meat") not the label
@@ -1099,6 +1170,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
         mapFilterType: 'category',
         mapFilterProductTag: category, // Use category key (e.g., "eggs", "meat")
         searchNonce: nonce,
+        ...(radiusMiles != null ? { navRadiusMiles: radiusMiles.toString() } : {}),
       },
     });
   };
@@ -1123,11 +1195,59 @@ const [focusResetKey, setFocusResetKey] = useState(0);
 
   const handleShowAll = (section: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push({
-      pathname: '/(tabs)/map',
-      params: { section },
-    });
+
+    // Open Now: activate the panel filter rather than pass fixed IDs, so panning shows
+    // all currently-open farmstands in the new viewport (not just the 10 in the Explore row).
+    if (section === 'open') {
+      const nonce = Date.now().toString();
+      if (__DEV__) console.log('[Explore] Open Now → Show all | navOpenNow: true | navRadiusMiles: 25 | nonce:', nonce);
+      router.push({
+        pathname: '/(tabs)/map',
+        params: {
+          navOpenNow:    'true',
+          navRadiusMiles: '25',
+          openNowNonce:  nonce,
+        },
+      });
+      return;
+    }
+
+    const collectionSections: Record<string, { label: string; data: Farmstand[] }> = {
+      top:   { label: 'Top Spots For You', data: topSpots },
+      new:   { label: 'New This Week',     data: newThisWeek },
+      saved: { label: 'Most Saved',        data: mostSaved },
+    };
+
+    const col = collectionSections[section];
+    if (col && col.data.length > 0) {
+      const nonce = Date.now().toString();
+      if (__DEV__) console.log('[Explore] Show all →', col.label, '| ids:', col.data.length, '| first5:', col.data.slice(0, 5).map((f) => f.id), '| nonce:', nonce);
+      router.push({
+        pathname: '/(tabs)/map',
+        params: {
+          collectionIds:   col.data.map((f) => f.id).join(','),
+          collectionLabel: col.label,
+          collectionNonce: nonce,
+        },
+      });
+    } else {
+      router.push({
+        pathname: '/(tabs)/map',
+        params: { section },
+      });
+    }
   };
+
+  const handleAddFarmstandFromExplore = useCallback((rowName: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    if (__DEV__) console.log('[Explore] Add Farmstand CTA tapped from row:', rowName);
+    const navParams: Record<string, string> = {};
+    if (anchorLocation) {
+      navParams.prefillLat = anchorLocation.latitude.toString();
+      navParams.prefillLng = anchorLocation.longitude.toString();
+    }
+    router.push({ pathname: '/farmer/onboarding', params: navParams });
+  }, [anchorLocation, router]);
 
   return (
     <View style={{ flex: 1, backgroundColor: '#F4F1E8' }}>
@@ -1277,6 +1397,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
               onToggleFavorite={handleToggleFavorite}
               numCols={numColumns}
               colWidth={colWidth}
+              onAddFarmstand={() => handleAddFarmstandFromExplore('Top Spots For You')}
             />
           </Animated.View>
         )}
@@ -1301,6 +1422,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
               resetKey={focusResetKey}
               numCols={numColumns}
               colWidth={colWidth}
+              onAddFarmstand={() => handleAddFarmstandFromExplore('Baked Goods Near You')}
             />
           </Animated.View>
         )}
@@ -1310,7 +1432,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
           <Animated.View entering={FadeInDown.delay(600).duration(400)} className="mt-4">
             <SectionHeader
               title="Egg Stands Near You"
-              onShowAll={() => handleCategoryPress('eggs', 'Fresh Eggs')}
+              onShowAll={() => handleCategoryPress('eggs', 'Fresh Eggs', eggStandsRadius || 25)}
               radiusMiles={eggStandsRadius}
             />
             <HorizontalFarmstandList
@@ -1325,6 +1447,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
               resetKey={focusResetKey}
               numCols={numColumns}
               colWidth={colWidth}
+              onAddFarmstand={() => handleAddFarmstandFromExplore('Egg Stands Near You')}
             />
           </Animated.View>
         )}
@@ -1349,6 +1472,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
               resetKey={focusResetKey}
               numCols={numColumns}
               colWidth={colWidth}
+              onAddFarmstand={() => handleAddFarmstandFromExplore('Seasonal Stands')}
             />
           </Animated.View>
         )}
@@ -1372,6 +1496,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
               resetKey={focusResetKey}
               numCols={numColumns}
               colWidth={colWidth}
+              onAddFarmstand={() => handleAddFarmstandFromExplore('New This Week')}
             />
           </Animated.View>
         )}
@@ -1395,6 +1520,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
               resetKey={focusResetKey}
               numCols={numColumns}
               colWidth={colWidth}
+              onAddFarmstand={() => handleAddFarmstandFromExplore('Most Saved')}
             />
           </Animated.View>
         )}
@@ -1418,6 +1544,7 @@ const [focusResetKey, setFocusResetKey] = useState(0);
               resetKey={focusResetKey}
               numCols={numColumns}
               colWidth={colWidth}
+              onAddFarmstand={() => handleAddFarmstandFromExplore('Open Now')}
             />
           </Animated.View>
         )}

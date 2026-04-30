@@ -68,14 +68,16 @@ const CATEGORY_KEYS = [
 interface MapFilterModalProps {
   visible: boolean;
   onClose: () => void;
+  onApply?: () => void;
   onSliderChange?: (miles: number) => void;
   resultCount?: number;
 }
 
 // ── Component ──────────────────────────────────────────────────────────────
-export function MapFilterModal({ visible, onClose, onSliderChange, resultCount }: MapFilterModalProps) {
+export function MapFilterModal({ visible, onClose, onApply, onSliderChange, resultCount }: MapFilterModalProps) {
   // Filter store
   const minRating = useMapFiltersStore((s) => s.minRating);
+  const storeRadiusMiles = useMapFiltersStore((s) => s.radiusMiles);
   const storeMinPrice = useMapFiltersStore((s) => s.minPrice);
   const storeMaxPrice = useMapFiltersStore((s) => s.maxPrice);
   const openNow = useMapFiltersStore((s) => s.openNow);
@@ -84,6 +86,7 @@ export function MapFilterModal({ visible, onClose, onSliderChange, resultCount }
   const savedOnly = useMapFiltersStore((s) => s.savedOnly);
   const activeFilterCount = useMapFiltersStore((s) => s.activeFilterCount);
   const setMinRating = useMapFiltersStore((s) => s.setMinRating);
+  const setRadiusMiles = useMapFiltersStore((s) => s.setRadiusMiles);
   const setMinPrice = useMapFiltersStore((s) => s.setMinPrice);
   const setMaxPrice = useMapFiltersStore((s) => s.setMaxPrice);
   const setOpenNow = useMapFiltersStore((s) => s.setOpenNow);
@@ -120,7 +123,9 @@ export function MapFilterModal({ visible, onClose, onSliderChange, resultCount }
 
   useEffect(() => {
     if (visible) {
-      const savedMiles = getSessionRadius();
+      // Initialize from store so slider always reflects the committed filter value
+      const savedMiles = storeRadiusMiles;
+      saveSessionRadius(savedMiles);
       setLocalMiles(savedMiles);
       setIsLoaded(true);
       if (trackWidth > 0) {
@@ -131,7 +136,7 @@ export function MapFilterModal({ visible, onClose, onSliderChange, resultCount }
     } else {
       setIsLoaded(false);
     }
-  }, [visible, trackWidth]);
+  }, [visible, trackWidth, storeRadiusMiles]);
 
   useEffect(() => {
     if (isLoaded && trackWidth > 0) {
@@ -159,8 +164,9 @@ export function MapFilterModal({ visible, onClose, onSliderChange, resultCount }
 
   const finalizeZoom = useCallback((finalRadius: number) => {
     saveSessionRadius(finalRadius);
+    setRadiusMiles(finalRadius);
     onSliderChange?.(finalRadius);
-  }, [onSliderChange]);
+  }, [onSliderChange, setRadiusMiles]);
 
   const panGesture = Gesture.Pan()
     .onStart(() => {
@@ -197,16 +203,28 @@ export function MapFilterModal({ visible, onClose, onSliderChange, resultCount }
     setLocalMiles(newRadius);
     translateX.value = withSpring(radiusToPosition(newRadius, trackWidth), { damping: 20, stiffness: 300 });
     saveSessionRadius(newRadius);
+    setRadiusMiles(newRadius);
     onSliderChange?.(newRadius);
-  }, [trackWidth, translateX, onSliderChange]);
+  }, [trackWidth, translateX, onSliderChange, setRadiusMiles]);
 
   const handleApply = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     logRadiusChange(localMiles);
     saveSessionRadius(localMiles);
+    setRadiusMiles(localMiles);
+    // Silently swap inverted price range
+    const parsedMin = localMinPrice.trim() !== '' ? parseFloat(localMinPrice) : null;
+    const parsedMax = localMaxPrice.trim() !== '' ? parseFloat(localMaxPrice) : null;
+    if (parsedMin !== null && parsedMax !== null && parsedMin > parsedMax) {
+      setMinPrice(parsedMax);
+      setMaxPrice(parsedMin);
+    }
+    // Signal to the parent that the CTA was pressed (not just a swipe-to-close),
+    // so it can auto-zoom the map to the filtered results.
+    onApply?.();
     backdropOpacity.value = withTiming(0, { duration: 150 });
     setTimeout(onClose, 150);
-  }, [localMiles, onClose, backdropOpacity]);
+  }, [localMiles, localMinPrice, localMaxPrice, onClose, onApply, backdropOpacity, setRadiusMiles, setMinPrice, setMaxPrice]);
 
   const handleClose = useCallback(() => {
     backdropOpacity.value = withTiming(0, { duration: 150 });
@@ -245,10 +263,15 @@ export function MapFilterModal({ visible, onClose, onSliderChange, resultCount }
 
   const handleReset = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    resetFilters();
+    resetFilters(); // resets store including radiusMiles → DEFAULT_RADIUS
     setLocalMinPrice('');
     setLocalMaxPrice('');
-  }, [resetFilters]);
+    setLocalMiles(DEFAULT_RADIUS);
+    saveSessionRadius(DEFAULT_RADIUS);
+    if (trackWidth > 0) {
+      translateX.value = withTiming(radiusToPosition(DEFAULT_RADIUS, trackWidth), { duration: 200 });
+    }
+  }, [resetFilters, trackWidth, translateX]);
 
   if (!visible) return null;
 

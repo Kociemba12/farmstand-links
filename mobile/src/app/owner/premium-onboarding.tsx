@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -227,6 +227,10 @@ export default function PremiumOnboardingScreen() {
     }
   }, [user?.id, targetFarmstandId, setPendingFarmstandId]);
 
+  // Track whether success has already been shown so the customerInfo listener
+  // doesn't fire a duplicate success animation if purchasePackage already handled it.
+  const purchaseSuccessRef = useRef(false);
+
   const handleDismiss = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (router.canGoBack()) {
@@ -236,9 +240,35 @@ export default function PremiumOnboardingScreen() {
     }
   };
 
+  // Subscribe to RevenueCat customerInfo updates so purchases that complete after
+  // the app returns from background (Apple auth flow) are still handled.
+  const handleCustomerInfoUpdate = useCallback(
+    (info: import('react-native-purchases').CustomerInfo) => {
+      const isPremiumActive = !!info.entitlements.active[ENTITLEMENT_ID];
+      const activeKeys = Object.keys(info.entitlements.active).join(', ') || 'none';
+      console.log('[PremiumPurchase] customerInfo listener fired — entitlement "' + ENTITLEMENT_ID + '" active:', isPremiumActive, '| all active:', activeKeys);
+      if (isPremiumActive && !purchaseSuccessRef.current) {
+        console.log('[PremiumPurchase] Entitlement became active via background listener — showing success state');
+        purchaseSuccessRef.current = true;
+        refreshUserFarmstands().catch(() => {});
+        setPurchaseSuccess(true);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    },
+    [refreshUserFarmstands]
+  );
+
+  useEffect(() => {
+    Purchases.addCustomerInfoUpdateListener(handleCustomerInfoUpdate);
+    return () => {
+      Purchases.removeCustomerInfoUpdateListener(handleCustomerInfoUpdate);
+    };
+  }, [handleCustomerInfoUpdate]);
+
   const handleRestore = async () => {
     trackEvent('restore_purchase_tapped', { source: 'premium_onboarding', farmstand_id: targetFarmstandId || null });
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    console.log('[PremiumPurchase] ── Restore Purchases tapped ──');
     const { ok, reason } = prepareForPurchase();
     if (!ok) {
       if (reason === 'non-native') {
@@ -250,17 +280,22 @@ export default function PremiumOnboardingScreen() {
     }
     setIsRestoring(true);
     try {
+      console.log('[PremiumPurchase] Calling Purchases.restorePurchases()...');
       const info = await Purchases.restorePurchases();
       const isPremiumActive = !!info.entitlements.active[ENTITLEMENT_ID];
+      const activeEntitlements = Object.keys(info.entitlements.active).join(', ') || 'none';
+      console.log('[PremiumPurchase] restorePurchases complete — entitlement "' + ENTITLEMENT_ID + '" active:', isPremiumActive, '| all active:', activeEntitlements);
       if (isPremiumActive) {
         refreshUserFarmstands().catch(() => {});
         Alert.alert('Premium Restored', 'Your Premium access has been restored!', [{ text: 'Continue', onPress: handleDismiss }]);
       } else {
+        console.log('[PremiumPurchase] No active entitlement found after restore — all active:', activeEntitlements);
         Alert.alert('No Purchase Found', 'No previous App Store Premium purchases were found for this account.', [{ text: 'OK' }]);
       }
     } catch (e: unknown) {
-      const err = e as { message?: string };
-      console.error('[PremiumOnboarding] restorePurchases error:', err?.message ?? String(e));
+      const err = e as { message?: string; code?: number; userCancelled?: boolean };
+      console.warn('[PremiumPurchase] restorePurchases error — code:', err?.code, 'userCancelled:', err?.userCancelled, 'message:', err?.message ?? String(e));
+      try { console.warn('[PremiumPurchase] restore error JSON:', JSON.stringify(e)); } catch { /* non-serializable */ }
       Alert.alert('Unable to Restore', "We couldn't restore premium access right now. Please try again.", [{ text: 'OK' }]);
     } finally {
       setIsRestoring(false);
@@ -280,16 +315,11 @@ export default function PremiumOnboardingScreen() {
   const handleStartTrial = async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // ── Debug: environment snapshot at tap time ──
     console.log('[PremiumPurchase] ── tap: "Start 3-Month Free Trial" ──');
-    console.log('[PremiumPurchase] Platform.OS:', Platform.OS);
-    console.log('[PremiumPurchase] isNativeIOS:', Platform.OS === 'ios');
+    console.log('[PremiumPurchase] Platform.OS:', Platform.OS, '| user?.id:', user?.id ?? '(none)');
 
-    // Ensure RC is initialized and the environment supports purchases.
-    // prepareForPurchase() handles lazy re-init on native if startup init was missed.
-    // Only returns ok:false for web / non-native environments — NOT for TestFlight.
     const { ok, reason } = prepareForPurchase();
-    console.log('[PremiumPurchase] prepareForPurchase result — ok:', ok, 'reason:', reason ?? 'none');
+    console.log('[PremiumPurchase] prepareForPurchase — ok:', ok, 'reason:', reason ?? 'none');
 
     if (!ok) {
       if (reason === 'non-native') {
@@ -299,7 +329,6 @@ export default function PremiumOnboardingScreen() {
           [{ text: 'OK' }]
         );
       } else {
-        // RC failed to init even on native (missing API key / module issue)
         Alert.alert(
           'Purchase Setup Error',
           'Unable to initialize the purchase system. Please restart the app and try again.',
@@ -309,21 +338,44 @@ export default function PremiumOnboardingScreen() {
       return;
     }
 
+    // Ensure the current user is identified in RevenueCat before purchasing so
+    // the entitlement is bound to the right account.  logIn() is idempotent if
+    // the user is already identified, so it is safe to call here.
+    if (user?.id) {
+      try {
+        const loginResult = await Purchases.logIn(user.id);
+        console.log('[PremiumPurchase] RC logIn — created new RC user:', loginResult.created);
+      } catch (loginErr) {
+        console.warn('[PremiumPurchase] RC logIn failed (non-fatal — will attempt purchase anyway):', loginErr);
+      }
+    }
+
     setPurchasing(true);
     try {
       console.log('[PremiumPurchase] Calling Purchases.getOfferings()...');
       const offerings = await Purchases.getOfferings();
       const currentOfferingId = offerings.current?.identifier ?? 'none';
-      console.log('[PremiumPurchase] Offerings loaded — current offering:', currentOfferingId);
+      const allOfferingKeys = Object.keys(offerings.all ?? {}).join(', ') || 'none';
+      console.log('[PremiumPurchase] Offerings — current:', currentOfferingId, '| allKeys:', allOfferingKeys);
 
       if (!offerings.current) {
-        console.error('[PremiumPurchase] Offerings/packages did not load — offerings.current is null. Check RevenueCat dashboard configuration for this app/environment.');
-      } else {
-        const pkgList = offerings.current.availablePackages
-          .map((p) => `${p.identifier}(${p.product.identifier})`)
-          .join(', ');
-        console.log('[PremiumPurchase] Available packages:', pkgList || 'none');
+        console.error('[PremiumPurchase] offerings.current is null — no active offering in RevenueCat dashboard for this environment');
+        if (__DEV__) {
+          console.log('[PremiumPurchase] Full offerings:', JSON.stringify(offerings));
+        }
+        Alert.alert(
+          'Subscription Unavailable',
+          'Unable to load subscription options. Please check your connection and try again.',
+          [{ text: 'OK' }]
+        );
+        setPurchasing(false);
+        return;
       }
+
+      const pkgList = offerings.current.availablePackages
+        .map((p) => `${p.identifier}(product:${p.product.identifier},type:${p.packageType})`)
+        .join(' | ');
+      console.log('[PremiumPurchase] Available packages:', pkgList || 'none');
 
       const pkg: PurchasesPackage | undefined =
         offerings.current?.monthly ??
@@ -335,7 +387,7 @@ export default function PremiumOnboardingScreen() {
         );
 
       if (!pkg) {
-        console.error('[PremiumPurchase] No monthly package found in offerings — cannot proceed');
+        console.error('[PremiumPurchase] No monthly package found — cannot proceed. PackageTypes available:', offerings.current.availablePackages.map(p => p.packageType).join(', '));
         Alert.alert(
           'Subscription Unavailable',
           'Unable to load subscription options. Please check your connection and try again.',
@@ -345,22 +397,31 @@ export default function PremiumOnboardingScreen() {
         return;
       }
 
-      console.log('[PremiumPurchase] Package selected:', pkg.identifier);
-      console.log('[PremiumPurchase] Store product identifier:', pkg.product.identifier);
+      console.log('[PremiumPurchase] Package selected:', pkg.identifier, '| product:', pkg.product.identifier);
+      console.log('[PremiumPurchase] Product — priceString:', pkg.product.priceString, '| introPrice:', JSON.stringify(pkg.product.introPrice));
       console.log('[PremiumPurchase] Calling Purchases.purchasePackage()...');
-      await Purchases.purchasePackage(pkg);
 
-      // Verify the purchase succeeded via RevenueCat entitlement
-      const customerInfo = await Purchases.getCustomerInfo();
-      const isPremiumActive = !!customerInfo.entitlements.active[ENTITLEMENT_ID];
-      console.log('[PremiumPurchase] purchasePackage() complete — premium entitlement active:', isPremiumActive);
+      // Capture customerInfo directly from purchasePackage — avoids a separate getCustomerInfo()
+      // network call and is the most reliable way to check entitlement post-purchase.
+      const { customerInfo: purchaseCustomerInfo } = await Purchases.purchasePackage(pkg);
+      console.log('[PremiumPurchase] purchasePackage() resolved');
 
-      // Only write to DB if we have a farmstand to update
+      const isPremiumActive = !!purchaseCustomerInfo.entitlements.active[ENTITLEMENT_ID];
+      const activeEntitlements = Object.keys(purchaseCustomerInfo.entitlements.active).join(', ') || 'none';
+      console.log('[PremiumPurchase] Entitlement "' + ENTITLEMENT_ID + '" active:', isPremiumActive, '| all active entitlements:', activeEntitlements);
+
+      if (!isPremiumActive) {
+        // Purchase processed but entitlement not yet active — RevenueCat may need a moment.
+        // The customerInfo listener will catch it if it becomes active shortly after.
+        console.warn('[PremiumPurchase] Purchase completed but entitlement "' + ENTITLEMENT_ID + '" NOT active. Check: 1) entitlement key in RevenueCat dashboard matches "' + ENTITLEMENT_ID + '" 2) product is attached to offering and entitlement');
+      }
+
+      // Write to DB — activates premium_status='trial' on the farmstand record
       if (targetFarmstandId) {
         try {
           const session = await getValidSession();
           if (session?.access_token) {
-            console.log('[PremiumPurchase] Calling activate-premium for farmstand:', targetFarmstandId);
+            console.log('[PremiumPurchase] Calling activate-premium backend for farmstand:', targetFarmstandId);
             const resp = await fetch(`${BACKEND_URL}/api/activate-premium`, {
               method: 'POST',
               headers: {
@@ -370,39 +431,61 @@ export default function PremiumOnboardingScreen() {
               body: JSON.stringify({ farmstand_id: targetFarmstandId }),
             });
             if (resp.ok) {
-              console.log('[PremiumPurchase] activate-premium succeeded');
+              console.log('[PremiumPurchase] activate-premium backend succeeded');
             } else {
               const errText = await resp.text();
-              console.warn('[PremiumPurchase] activate-premium failed:', resp.status, errText);
+              console.warn('[PremiumPurchase] activate-premium backend failed:', resp.status, errText);
             }
+          } else {
+            console.warn('[PremiumPurchase] No valid session — skipping activate-premium backend call');
           }
         } catch (backendErr) {
           console.warn('[PremiumPurchase] activate-premium network error:', backendErr);
         }
       }
 
-      // Refresh farmstands so the UI reflects the updated premium status
       refreshUserFarmstands().catch(() => {});
-
       trackEvent('premium_trial_started', { source: 'premium_onboarding', farmstand_id: targetFarmstandId || null });
+      purchaseSuccessRef.current = true;
       setPurchaseSuccess(true);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e: unknown) {
-      const err = e as { userCancelled?: boolean; message?: string; code?: number; underlyingErrorMessage?: string };
-      console.warn('[PremiumPurchase] Caught error — code:', err?.code, 'message:', err?.message ?? String(e));
+      const err = e as {
+        userCancelled?: boolean;
+        message?: string;
+        code?: number;
+        underlyingErrorMessage?: string;
+        readableErrorCode?: string;
+      };
+
+      // Log every available field — critical for diagnosing the "nothing happens" case
+      console.warn('[PremiumPurchase] ── PURCHASE ERROR ──');
+      console.warn('[PremiumPurchase] userCancelled:', err?.userCancelled);
+      console.warn('[PremiumPurchase] code:', err?.code);
+      console.warn('[PremiumPurchase] message:', err?.message ?? String(e));
+      console.warn('[PremiumPurchase] underlyingErrorMessage:', err?.underlyingErrorMessage ?? '(none)');
+      console.warn('[PremiumPurchase] readableErrorCode:', err?.readableErrorCode ?? '(none)');
+      try { console.warn('[PremiumPurchase] full error JSON:', JSON.stringify(e)); } catch { /* non-serializable */ }
+
       if (err?.userCancelled) {
-        console.log('[PremiumPurchase] Purchase cancelled by user — user stays on free plan');
-        // User cancelled — do nothing, no premium granted
+        // "Nothing happens" is almost always this branch — userCancelled=true silently exits.
+        // Show a DEV alert so it's visible during debugging.
+        console.log('[PremiumPurchase] Purchase cancelled (userCancelled=true) — user stays on free plan');
+        if (__DEV__) {
+          Alert.alert(
+            '[DEV] Purchase Cancelled',
+            'userCancelled=true\n\nThis means StoreKit returned a cancelled transaction.\n\nCommon causes:\n• Product not in App Store Connect / sandbox\n• Offering not active in RevenueCat\n• User dismissed payment sheet\n• Wrong bundle ID\n• Sandbox account issue\n\nCheck LOGS tab for full error details.',
+            [{ text: 'OK' }]
+          );
+        }
       } else if (err?.code === 23) {
-        // RevenueCat CONFIGURATION_ERROR — products not yet available in App Store Connect
-        console.warn('[PremiumPurchase] CONFIGURATION_ERROR — products not set up in App Store Connect / RevenueCat');
+        console.warn('[PremiumPurchase] CONFIGURATION_ERROR (code 23) — product not set up in App Store Connect / RevenueCat');
         Alert.alert(
           'Subscriptions Unavailable',
           'Subscription options are not available right now. Please try again later.',
           [{ text: 'OK' }]
         );
       } else {
-        console.warn('[PremiumPurchase] purchasePackage() failed — message:', err?.message ?? String(e));
         Alert.alert(
           'Purchase Failed',
           err?.message ?? 'Something went wrong. Please try again.',

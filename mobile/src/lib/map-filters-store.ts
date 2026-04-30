@@ -3,12 +3,17 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export type SortMode = 'relevance' | 'rating' | 'most_viewed' | 'most_saved' | 'recently_active';
 
+export const MAX_FILTER_RADIUS = 100;
+
 export interface MapFiltersState {
   // Sort
   sortBy: SortMode;
 
   // Rating
   minRating: number | null; // null = Any, 3.5, 4.0, 4.5
+
+  // Distance
+  radiusMiles: number; // 1–100; 100 = no filter
 
   // Price range (product-based)
   minPrice: number | null; // null = no min
@@ -30,6 +35,7 @@ export interface MapFiltersState {
   // Actions
   setSortBy: (sort: SortMode) => void;
   setMinRating: (rating: number | null) => void;
+  setRadiusMiles: (miles: number) => void;
   setMinPrice: (value: number | null) => void;
   setMaxPrice: (value: number | null) => void;
   setOpenNow: (value: boolean) => void;
@@ -45,6 +51,7 @@ const STORAGE_KEY = 'map-filters-v2';
 const DEFAULT_STATE = {
   sortBy: 'relevance' as SortMode,
   minRating: null as number | null,
+  radiusMiles: MAX_FILTER_RADIUS as number,
   minPrice: null as number | null,
   maxPrice: null as number | null,
   openNow: false,
@@ -56,6 +63,7 @@ const DEFAULT_STATE = {
 function computeFilterCount(state: typeof DEFAULT_STATE): number {
   let count = 0;
   if (state.minRating !== null) count++;
+  if (state.radiusMiles < MAX_FILTER_RADIUS) count++;
   if (state.minPrice !== null || state.maxPrice !== null) count++;
   if (state.openNow) count++;
   if (state.inStockOnly) count++;
@@ -86,6 +94,12 @@ export const useMapFiltersStore = create<MapFiltersState>((set, get) => ({
   setMinRating: (minRating) => {
     const next = { ...get(), minRating };
     set({ minRating, activeFilterCount: computeFilterCount(next) });
+    persist(next);
+  },
+
+  setRadiusMiles: (radiusMiles) => {
+    const next = { ...get(), radiusMiles };
+    set({ radiusMiles, activeFilterCount: computeFilterCount(next) });
     persist(next);
   },
 
