@@ -27,7 +27,7 @@ import { useSplashStore } from '@/lib/splash-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFonts, LibreBaskerville_400Regular } from '@expo-google-fonts/libre-baskerville';
 import { initAnalytics, logAppOpen } from '@/lib/analytics-events';
-import { initializePushNotifications, syncProfilePushToken, setupNotificationListeners } from '@/lib/push-notifications';
+import { initializePushNotifications, syncProfilePushToken, setupNotificationListeners, initNotificationHandler } from '@/lib/push-notifications';
 import { registerPushTokenForCurrentUser } from '@/lib/push';
 import * as Notifications from 'expo-notifications';
 import { navigateToConversation } from '@/lib/conversation-navigation';
@@ -530,6 +530,30 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
     };
   }, [router]);
 
+  // Install global JS error handler — catches uncaught errors that would otherwise SIGABRT.
+  // Must be set early, inside a useEffect, so it survives hot-reloads without leaving stale handlers.
+  // Chains to the existing default handler so React Native's built-in crash reporting is preserved.
+  useEffect(() => {
+    try {
+      const g = global as {
+        ErrorUtils?: {
+          getGlobalHandler?: () => ((error: Error, isFatal?: boolean) => void) | null;
+          setGlobalHandler?: (fn: (error: Error, isFatal?: boolean) => void) => void;
+        };
+      };
+      if (g.ErrorUtils?.setGlobalHandler) {
+        const defaultHandler = g.ErrorUtils.getGlobalHandler?.() ?? null;
+        g.ErrorUtils.setGlobalHandler((error: Error, isFatal?: boolean) => {
+          console.error('[GLOBAL ERROR] isFatal:', isFatal, '|', error?.message ?? String(error), error);
+          defaultHandler?.(error, isFatal);
+        });
+        console.log('[BOOT] Global error handler installed');
+      }
+    } catch {
+      // ErrorUtils may not be available on all platforms — safe to ignore
+    }
+  }, []);
+
   // Initialize analytics and log app_open on app start
   // Note: Analytics is already loaded by bootstrap, this just logs the open event
   useEffect(() => {
@@ -542,10 +566,13 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
       try {
         await initAnalytics();
         logAppOpen(user?.id);
+        console.log('[BOOT] analytics init ok');
       } catch (e) {
-        if (__DEV__) console.log('[Startup] initAnalytics error:', e);
+        console.warn('[BOOT] analytics init failed (non-fatal):', e instanceof Error ? e.message : String(e));
       }
-    })();
+    })().catch((e) => {
+      console.warn('[BOOT] analytics effect uncaught:', e instanceof Error ? e.message : String(e));
+    });
   }, []);
 
   // Initialize push notifications after user session is available.
@@ -872,22 +899,48 @@ export default function RootLayout() {
 
   useEffect(() => {
     (async () => {
-      if (__DEV__) console.log('[Startup] RootLayout mounted — preventing auto-hide, hiding native splash, initializing RC');
-      // preventAutoHideAsync must be called before hideAsync. Both are inside this
-      // effect so neither ever runs at module-eval time (which caused SIGABRT on
-      // first TestFlight launch when the native SplashScreen module wasn't ready).
       try {
-        await SplashScreen.preventAutoHideAsync();
+        console.log('[BOOT] App starting');
+
+        // Step 1: Notification handler — must be in useEffect, never at module scope.
+        // Running at module scope caused SIGABRT on first TestFlight install (build 179).
+        console.log('[BOOT] Step 1/4: notification handler');
+        try {
+          initNotificationHandler();
+          console.log('[BOOT] notification handler ok');
+        } catch (e) {
+          console.warn('[BOOT] notification handler failed (non-fatal):', e instanceof Error ? e.message : String(e));
+        }
+
+        // Step 2: Splash screen — preventAutoHideAsync must come before hideAsync.
+        console.log('[BOOT] Step 2/4: splash screen');
+        try {
+          await SplashScreen.preventAutoHideAsync();
+          console.log('[BOOT] splash preventAutoHide ok');
+        } catch (e) {
+          console.warn('[BOOT] splash preventAutoHide failed (non-fatal):', e instanceof Error ? e.message : String(e));
+        }
+        try {
+          await SplashScreen.hideAsync();
+          console.log('[BOOT] splash hidden');
+        } catch (e) {
+          console.warn('[BOOT] splash hideAsync failed (non-fatal):', e instanceof Error ? e.message : String(e));
+        }
+
+        // Step 3: RevenueCat — initRevenueCat() is fully self-contained with its own
+        // try/catch; it will not throw. Outer catch here is belt-and-suspenders.
+        console.log('[BOOT] Step 3/4: RevenueCat');
+        initRevenueCat();
+
+        // Step 4: PostHog — getPostHog() never throws; returns undefined on failure.
+        console.log('[BOOT] Step 4/4: PostHog');
+        const ph = getPostHog();
+        console.log('[BOOT] PostHog ready:', ph != null);
+
+        console.log('[BOOT] All startup steps complete');
       } catch (e) {
-        if (__DEV__) console.log('[Startup] SplashScreen.preventAutoHideAsync threw (non-fatal):', e);
+        console.error('[BOOT ERROR] Unexpected startup failure:', e instanceof Error ? e.message : String(e), e);
       }
-      try {
-        await SplashScreen.hideAsync();
-      } catch (e) {
-        if (__DEV__) console.log('[Startup] SplashScreen.hideAsync threw (non-fatal):', e);
-      }
-      // Initialize RevenueCat once on app startup (internally guarded with try/catch)
-      initRevenueCat();
     })();
   }, []);
 
@@ -895,14 +948,17 @@ export default function RootLayout() {
   useEffect(() => {
     if (fontsLoaded && !bootstrapStarted.current) {
       bootstrapStarted.current = true;
-      if (__DEV__) console.log('[Startup] bootstrap starting');
+      if (__DEV__) console.log('[Startup] auth bootstrap start');
       (async () => {
         try {
           await bootstrap();
+          if (__DEV__) console.log('[Startup] auth bootstrap done');
         } catch (e) {
-          if (__DEV__) console.log('[Startup] bootstrap threw:', e);
+          if (__DEV__) console.log('[Startup] auth bootstrap fail:', e instanceof Error ? e.message : String(e));
         }
-      })();
+      })().catch((e) => {
+        if (__DEV__) console.log('[Startup] auth bootstrap uncaught:', e instanceof Error ? e.message : String(e));
+      });
     }
   }, [fontsLoaded, bootstrap]);
 

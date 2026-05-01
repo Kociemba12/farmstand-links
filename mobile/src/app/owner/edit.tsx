@@ -158,6 +158,7 @@ interface PhotoItem {
 
 interface VideoItem {
   uri: string;
+  storagePath: string | null;
   uploading: boolean;
   failed: boolean;
   isLocalPreview: boolean;
@@ -559,6 +560,7 @@ export default function OwnerEditScreen() {
           if (fs.videoUrl) {
             setLocalVideo({
               uri: fs.videoUrl,
+              storagePath: fs.videoPath ?? null,
               uploading: false,
               failed: false,
               isLocalPreview: false,
@@ -863,45 +865,47 @@ export default function OwnerEditScreen() {
 
   // ============ VIDEO MANAGEMENT ============
 
-  const uploadAndSaveVideo = async (localUri: string, durationSeconds: number | null): Promise<void> => {
+  const uploadAndSaveVideo = async (localUri: string, durationSeconds: number | null, mimeType: string): Promise<void> => {
     if (!farmstandId || !isSupabaseConfigured()) throw new Error('Not configured');
     await ensureSessionReady();
+
+    const ext = mimeType === 'video/quicktime' ? 'mov' : 'mp4';
+    const timestamp = Date.now();
+    const storagePath = `${farmstandId}/${timestamp}-video.${ext}`;
+    console.log('[VideoUpload] upload starting — bucket: farmstand-videos | path:', storagePath, '| mime:', mimeType, '| uri:', localUri.slice(0, 80));
 
     // Delete old video from storage if replacing
     if (farmstand?.videoPath) {
       deleteFromSupabaseStorage('farmstand-videos', farmstand.videoPath).catch(() => {});
     }
 
-    const timestamp = Date.now();
-    const storagePath = `${farmstandId}/${timestamp}-video.mp4`;
-    if (__DEV__) console.log('[EditFarm] uploadAndSaveVideo — storagePath:', storagePath);
-
     const { error: uploadError } = await uploadToSupabaseStorage(
       'farmstand-videos',
       storagePath,
       localUri,
-      'video/mp4'
+      mimeType
     );
-    if (uploadError) throw new Error(uploadError.message || 'Video upload failed');
+    if (uploadError) {
+      console.log('[VideoUpload] upload failed — code:', (uploadError as { code?: string }).code ?? 'n/a', '| message:', uploadError.message, '| details:', JSON.stringify(uploadError));
+      throw new Error(uploadError.message || 'Video upload failed');
+    }
 
-    // Derive canonical public URL via getStoragePublicUrl
-    // (equivalent to supabase.storage.from('farmstand-videos').getPublicUrl(storagePath))
     const publicUrl = getStoragePublicUrl('farmstand-videos', storagePath);
-    if (__DEV__) console.log('[EditFarm] uploadAndSaveVideo — generated public URL:', publicUrl);
+    console.log('[VideoUpload] upload success — publicUrl:', publicUrl, '| path:', storagePath);
 
     const dbPayload = { videoUrl: publicUrl, videoPath: storagePath, videoDurationSeconds: durationSeconds };
-    if (__DEV__) console.log('[EditFarm] uploadAndSaveVideo — updating farmstands row with:', JSON.stringify(dbPayload));
+    console.log('[VideoUpload] database update starting —', JSON.stringify(dbPayload));
 
     try {
       await updateFarmstand(farmstandId, dbPayload);
-      if (__DEV__) console.log('[EditFarm] uploadAndSaveVideo — updateFarmstand succeeded');
+      console.log('[VideoUpload] database update success');
     } catch (e) {
-      if (__DEV__) console.warn('[EditFarm] uploadAndSaveVideo — updateFarmstand threw:', e instanceof Error ? e.message : String(e));
+      console.log('[VideoUpload] database update failed — message:', e instanceof Error ? e.message : String(e), '| details:', JSON.stringify(e));
       throw e;
     }
 
     setFarmstand((prev) => prev ? { ...prev, videoUrl: publicUrl, videoPath: storagePath, videoDurationSeconds: durationSeconds } : prev);
-    setLocalVideo({ uri: publicUrl, uploading: false, failed: false, isLocalPreview: false, durationSeconds });
+    setLocalVideo({ uri: publicUrl, storagePath: storagePath, uploading: false, failed: false, isLocalPreview: false, durationSeconds });
     showToast('Video uploaded!', 'success');
   };
 
@@ -940,26 +944,28 @@ export default function OwnerEditScreen() {
     }
     const asset = result.assets[0];
     const durationMs = asset.duration ?? null;
-    if (__DEV__) console.log('[EditFarm] pickVideo — asset uri:', asset.uri.slice(0, 80), '| durationMs:', durationMs, '| fileSize:', (asset as { fileSize?: number }).fileSize ?? 'n/a');
+    const assetMimeType = (asset as { mimeType?: string }).mimeType ?? 'video/mp4';
+    const assetFileSize = (asset as { fileSize?: number }).fileSize ?? null;
+    console.log('[VideoUpload] picker result — uri:', asset.uri.slice(0, 80), '| mimeType:', assetMimeType, '| durationMs:', durationMs, '| fileSize:', assetFileSize);
 
     if (durationMs !== null && durationMs > MAX_VIDEO_DURATION_SECONDS * 1000) {
-      if (__DEV__) console.log('[EditFarm] pickVideo — video too long:', durationMs, 'ms, max:', MAX_VIDEO_DURATION_SECONDS * 1000);
+      console.log('[VideoUpload] picker rejected — video too long:', durationMs, 'ms, max:', MAX_VIDEO_DURATION_SECONDS * 1000);
       Alert.alert('Video Too Long', `Video must be ${MAX_VIDEO_DURATION_SECONDS} seconds or less.`);
       return;
     }
 
     const durationSeconds = durationMs !== null ? Math.round(durationMs / 1000) : null;
+    console.log('[VideoUpload] selected — uri:', asset.uri.slice(0, 80), '| type:', assetMimeType, '| durationSeconds:', durationSeconds, '| fileSize:', assetFileSize);
 
-    // Optimistic preview
-    setLocalVideo({ uri: asset.uri, uploading: true, failed: false, isLocalPreview: true, durationSeconds });
-    if (__DEV__) console.log('[EditFarm] pickVideo — upload started, durationSeconds:', durationSeconds);
+    // Optimistic preview — storagePath is null until upload completes
+    setLocalVideo({ uri: asset.uri, storagePath: null, uploading: true, failed: false, isLocalPreview: true, durationSeconds });
 
-    uploadAndSaveVideo(asset.uri, durationSeconds)
+    uploadAndSaveVideo(asset.uri, durationSeconds, assetMimeType)
       .then(() => {
-        if (__DEV__) console.log('[EditFarm] pickVideo — upload finished, farmstand.videoUrl:', farmstand?.videoUrl);
+        console.log('[VideoUpload] upload+save pipeline finished successfully');
       })
       .catch((err: unknown) => {
-        if (__DEV__) console.warn('[EditFarm] pickVideo — upload failed:', err instanceof Error ? err.message : String(err));
+        console.log('[VideoUpload] upload+save pipeline failed —', err instanceof Error ? err.message : String(err));
         setLocalVideo((prev) => prev ? { ...prev, uploading: false, failed: true } : prev);
         showToast('Video upload failed. Please try again.', 'error');
       });
@@ -1137,6 +1143,11 @@ export default function OwnerEditScreen() {
   // ============ SAVE HANDLER ============
 
   const handleSave = async () => {
+    if (localVideo?.uploading === true) {
+      Alert.alert('Upload In Progress', 'Please wait for the video to finish uploading before saving.');
+      return;
+    }
+
     if (!formData.name.trim()) {
       Alert.alert('Required', 'Please enter a farmstand name');
       return;
@@ -1235,23 +1246,23 @@ export default function OwnerEditScreen() {
         !localVideo.isLocalPreview &&
         !localVideo.uploading &&
         !localVideo.failed;
+      console.log('[VideoSave] pre-save video state — localVideo:', JSON.stringify(localVideo), '| isVideoReady:', isVideoReady, '| farmstand.videoUrl:', farmstand?.videoUrl, '| farmstand.videoPath:', farmstand?.videoPath);
       if (isVideoReady) {
         updates.videoUrl = localVideo!.uri;
-        updates.videoPath = farmstand?.videoPath ?? null;
+        updates.videoPath = localVideo!.storagePath ?? farmstand?.videoPath ?? null;
         updates.videoDurationSeconds = localVideo!.durationSeconds;
-        if (__DEV__) console.log('[EditListing] Save includes video — videoUrl:', updates.videoUrl, '| videoPath:', updates.videoPath, '| duration:', updates.videoDurationSeconds);
+        console.log('[VideoSave] Save includes uploaded video — videoUrl:', updates.videoUrl, '| videoPath:', updates.videoPath, '| duration:', updates.videoDurationSeconds);
       } else if (localVideo === null) {
         // No video (never set or explicitly removed)
         updates.videoUrl = null;
         updates.videoPath = null;
         updates.videoDurationSeconds = null;
-        if (__DEV__) console.log('[EditListing] Save — no video, persisting null for video fields');
+        console.log('[VideoSave] Save — no video set, clearing video fields');
       } else {
-        // Upload still in progress or failed — preserve whatever is already in the DB
-        updates.videoUrl = farmstand?.videoUrl ?? null;
-        updates.videoPath = farmstand?.videoPath ?? null;
-        updates.videoDurationSeconds = farmstand?.videoDurationSeconds ?? null;
-        if (__DEV__) console.log('[EditListing] Save — video upload in progress or failed, preserving existing DB values');
+        // Upload in progress or failed — omit video fields entirely so the RPC's
+        // CASE WHEN p_updates ? 'video_url' THEN ... ELSE video_url END
+        // preserves whatever is already in the DB instead of overwriting with null.
+        console.log('[VideoSave] Save — upload in progress or failed; omitting video fields so DB keeps existing values');
       }
 
       // DEBUG: Log the hours and isOpen24_7 values being sent
@@ -1311,11 +1322,15 @@ export default function OwnerEditScreen() {
         );
       }
 
+      if (__DEV__) console.log('[VideoSave] payload sent to Supabase — videoUrl:', updates.videoUrl, '| videoPath:', updates.videoPath, '| videoDurationSeconds:', updates.videoDurationSeconds, '| videoKey present:', 'videoUrl' in updates);
       await updateFarmstand(farmstandId, updates);
+      if (__DEV__) console.log('[VideoSave] updateFarmstand succeeded');
 
       // Re-fetch the farmstand from Supabase and update the store
       // This ensures the UI shows the latest data immediately
-      await refreshSingleFarmstand(farmstandId);
+      const refreshed = await refreshSingleFarmstand(farmstandId);
+      console.log('[VideoSave] refreshSingleFarmstand done');
+      console.log('[VideoUpload] reloaded farmstand video fields (from DB) — videoUrl:', refreshed?.videoUrl ?? '(null)', '| videoPath:', refreshed?.videoPath ?? '(null)', '| videoDurationSeconds:', refreshed?.videoDurationSeconds ?? '(null)');
 
       // Log analytics event
       logFarmstandEdit(farmstandId, ['general'], user.id);
@@ -2066,11 +2081,11 @@ export default function OwnerEditScreen() {
         <SafeAreaView edges={['bottom']}>
           <Pressable
             onPress={handleSave}
-            disabled={isSaving}
+            disabled={isSaving || localVideo?.uploading === true}
             style={{
               height: 54,
               borderRadius: 14,
-              backgroundColor: isSaving ? 'rgba(31, 107, 78, 0.6)' : '#1F6B4E',
+              backgroundColor: (isSaving || localVideo?.uploading === true) ? 'rgba(31, 107, 78, 0.6)' : '#1F6B4E',
               alignItems: 'center',
               justifyContent: 'center',
               flexDirection: 'row',

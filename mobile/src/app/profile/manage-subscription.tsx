@@ -14,7 +14,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import Purchases, { CustomerInfo } from 'react-native-purchases';
 import { useBootstrapStore } from '@/lib/bootstrap-store';
-import { prepareForPurchase, isRevenueCatReady } from '@/lib/revenuecat';
+import { prepareForPurchase } from '@/lib/revenuecat';
 import { MenuRow } from '@/components/MenuRow';
 
 const ENTITLEMENT_ID = 'pro';
@@ -85,8 +85,9 @@ export default function ManageSubscriptionScreen() {
   const primaryFarmstand = ownedFarmstands[0] ?? null;
 
   useEffect(() => {
-    const rcReady = isRevenueCatReady();
-    if (!rcReady) {
+    // Lazy-init RC when the user opens this screen (user-triggered, not startup).
+    const { ok } = prepareForPurchase();
+    if (!ok) {
       setLoadingInfo(false);
       return;
     }

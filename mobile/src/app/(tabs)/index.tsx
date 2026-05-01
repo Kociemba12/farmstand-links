@@ -45,7 +45,7 @@ const fallbackHero = require('../../assets/images/farmstand-final-fallback.png')
 import { FarmstandLogoPng, LOGO_WIDTH, LOGO_HEIGHT } from '@/components/FarmstandLogoPng';
 import { LocationBanner } from '@/components/LocationBanner';
 import { GoldVerifiedRibbon } from '@/components/GoldVerifiedRibbon';
-import { PremiumBadge, isPremiumFarmstand } from '@/components/PremiumBadge';
+import { isPremiumFarmstand } from '@/components/PremiumBadge';
 import { logSearch, logProductChipTap, logScreenView, logExploreOpen } from '@/lib/analytics-events';
 import { trackEvent } from '@/lib/track';
 import { useFocusEffect } from '@react-navigation/native';
@@ -369,6 +369,37 @@ function FarmstandCard({
               />
             </Animated.View>
           </Pressable>
+
+          {/* Image overlay badges — top-left corner, stacked vertically */}
+          {(isPremiumFarmstand(farmstand.premiumStatus) || farmstand.operatingStatus === 'seasonal') && (
+            <View style={{ position: 'absolute', top: 10, left: 10, alignItems: 'flex-start' }}>
+              {isPremiumFarmstand(farmstand.premiumStatus) && (
+                <View style={{
+                  backgroundColor: 'rgba(255,255,255,0.92)',
+                  borderRadius: 20,
+                  paddingHorizontal: 8,
+                  paddingVertical: 3,
+                  borderWidth: 1,
+                  borderColor: '#B8D4BB',
+                }}>
+                  <Text style={{ color: '#2D5A3D', fontSize: 10, fontWeight: '600', letterSpacing: 0.2 }}>Premium</Text>
+                </View>
+              )}
+              {farmstand.operatingStatus === 'seasonal' && (
+                <View style={{
+                  backgroundColor: 'rgba(255,255,255,0.92)',
+                  borderRadius: 20,
+                  paddingHorizontal: 8,
+                  paddingVertical: 3,
+                  borderWidth: 1,
+                  borderColor: '#93C5FD',
+                  marginTop: isPremiumFarmstand(farmstand.premiumStatus) ? 4 : 0,
+                }}>
+                  <Text style={{ color: '#1D4ED8', fontSize: 10, fontWeight: '600', letterSpacing: 0.2 }}>Seasonal</Text>
+                </View>
+              )}
+            </View>
+          )}
         </View>
 
         {/* Text area — explicit width matches card, not relative to parent */}
@@ -389,17 +420,11 @@ function FarmstandCard({
               </View>
             )}
           </View>
-          {isPremiumFarmstand(farmstand.premiumStatus) && (
-            <View style={{ marginTop: 4 }}>
-              <PremiumBadge size="small" />
-            </View>
-          )}
 
-          {/* Operating status badge — only shown when not 'open' */}
-          {farmstand.operatingStatus && farmstand.operatingStatus !== 'open' && (() => {
+          {/* Operating status badge — temp/permanently closed only; seasonal moved to image overlay */}
+          {farmstand.operatingStatus && farmstand.operatingStatus !== 'open' && farmstand.operatingStatus !== 'seasonal' && (() => {
             const statusConfig: Record<string, { label: string; bg: string; text: string }> = {
               temporarily_closed: { label: 'Temp. Closed', bg: '#FEF3C7', text: '#B45309' },
-              seasonal: { label: 'Seasonal', bg: '#DBEAFE', text: '#1D4ED8' },
               permanently_closed: { label: 'Permanently Closed', bg: '#FEE2E2', text: '#B91C1C' },
             };
             const cfg = statusConfig[farmstand.operatingStatus];
@@ -1395,8 +1420,6 @@ const [focusResetKey, setFocusResetKey] = useState(0);
               favoritesLoaded={isFavoritesLoaded}
               onFarmstandPress={handleFarmstandPress}
               onToggleFavorite={handleToggleFavorite}
-              numCols={numColumns}
-              colWidth={colWidth}
               onAddFarmstand={() => handleAddFarmstandFromExplore('Top Spots For You')}
             />
           </Animated.View>
@@ -1420,8 +1443,6 @@ const [focusResetKey, setFocusResetKey] = useState(0);
               onToggleFavorite={handleToggleFavorite}
               variant="small"
               resetKey={focusResetKey}
-              numCols={numColumns}
-              colWidth={colWidth}
               onAddFarmstand={() => handleAddFarmstandFromExplore('Baked Goods Near You')}
             />
           </Animated.View>
@@ -1445,8 +1466,6 @@ const [focusResetKey, setFocusResetKey] = useState(0);
               onToggleFavorite={handleToggleFavorite}
               variant="small"
               resetKey={focusResetKey}
-              numCols={numColumns}
-              colWidth={colWidth}
               onAddFarmstand={() => handleAddFarmstandFromExplore('Egg Stands Near You')}
             />
           </Animated.View>
@@ -1494,8 +1513,6 @@ const [focusResetKey, setFocusResetKey] = useState(0);
               onToggleFavorite={handleToggleFavorite}
               variant="small"
               resetKey={focusResetKey}
-              numCols={numColumns}
-              colWidth={colWidth}
               onAddFarmstand={() => handleAddFarmstandFromExplore('New This Week')}
             />
           </Animated.View>
@@ -1518,8 +1535,6 @@ const [focusResetKey, setFocusResetKey] = useState(0);
               onToggleFavorite={handleToggleFavorite}
               variant="small"
               resetKey={focusResetKey}
-              numCols={numColumns}
-              colWidth={colWidth}
               onAddFarmstand={() => handleAddFarmstandFromExplore('Most Saved')}
             />
           </Animated.View>
@@ -1542,8 +1557,6 @@ const [focusResetKey, setFocusResetKey] = useState(0);
               onToggleFavorite={handleToggleFavorite}
               variant="small"
               resetKey={focusResetKey}
-              numCols={numColumns}
-              colWidth={colWidth}
               onAddFarmstand={() => handleAddFarmstandFromExplore('Open Now')}
             />
           </Animated.View>

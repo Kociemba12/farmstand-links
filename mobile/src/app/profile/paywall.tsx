@@ -82,7 +82,17 @@ export default function PaywallScreen() {
   const primaryFarmstand = ownedFarmstands[0] ?? null;
 
   // Whether RevenueCat is ready for purchase calls in this environment.
-  const rcReady = isRevenueCatReady();
+  // State (not const) so that the lazy-init effect below can flip it to true
+  // and trigger the offerings/entitlement effects to re-run.
+  const [rcReady, setRcReady] = useState(() => isRevenueCatReady());
+
+  // Lazy-init RevenueCat when the user explicitly opens the paywall.
+  // With STARTUP_REVENUECAT_ENABLED=false, RC is not configured until here.
+  useEffect(() => {
+    if (rcReady) return;
+    const { ok } = prepareForPurchase();
+    if (ok) setRcReady(true);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch entitlement state to detect existing premium users before showing purchase UI.
   useEffect(() => {
@@ -115,6 +125,7 @@ export default function PaywallScreen() {
     let mounted = true;
     const fetchOffering = async () => {
       try {
+        console.log('[RC] offerings fetch starting');
         console.log('[Paywall] Calling Purchases.getOfferings()...');
         const offerings = await Purchases.getOfferings();
         if (!mounted) return;
@@ -142,6 +153,7 @@ export default function PaywallScreen() {
       } catch (e: unknown) {
         if (!mounted) return;
         const err = e as { message?: string };
+        console.log('[RC] offerings fetch failed', err?.message ?? String(e));
         console.warn('[Paywall] getOfferings() error:', err?.message ?? String(e));
         setOfferingsLoadFailed(true);
       } finally {
@@ -199,6 +211,7 @@ export default function PaywallScreen() {
     if (!purchasePkg) {
       console.log('[Paywall] No cached package — fetching offerings now...');
       try {
+        console.log('[RC] offerings fetch starting');
         const offerings = await Purchases.getOfferings();
         const currentOfferingId = offerings.current?.identifier ?? 'none';
         console.log('[Paywall] Offerings loaded — current offering:', currentOfferingId);
@@ -219,6 +232,7 @@ export default function PaywallScreen() {
         }
       } catch (e: unknown) {
         const err = e as { message?: string };
+        console.log('[RC] offerings fetch failed', err?.message ?? String(e));
         console.warn('[Paywall] getOfferings() error:', err?.message ?? String(e));
         setOfferingsLoadFailed(true);
       }

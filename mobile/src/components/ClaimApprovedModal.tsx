@@ -17,6 +17,7 @@ import {
   Alert,
 } from 'react-native';
 import Purchases from 'react-native-purchases';
+import { prepareForPurchase } from '@/lib/revenuecat';
 import { WebView } from 'react-native-webview';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -117,6 +118,15 @@ export function ClaimApprovedModal({ visible, farmstandId, onDismiss }: ClaimApp
   const [isRestoring, setIsRestoring] = useState(false);
 
   const handleRestore = async () => {
+    const { ok, reason } = prepareForPurchase();
+    if (!ok) {
+      if (reason === 'non-native') {
+        Alert.alert('Available in the iOS App', 'Restoring purchases is available in the iOS app build.', [{ text: 'OK' }]);
+      } else {
+        Alert.alert('Setup Error', 'Unable to initialize the purchase system. Please restart the app and try again.', [{ text: 'OK' }]);
+      }
+      return;
+    }
     setIsRestoring(true);
     try {
       const freshInfoBefore = await Purchases.getCustomerInfo();

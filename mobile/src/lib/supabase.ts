@@ -1536,7 +1536,7 @@ export async function uploadToSupabaseStorage(
     }
 
     const uploadController = new AbortController();
-    const uploadTimeout = setTimeout(() => uploadController.abort(), 20000);
+    const uploadTimeout = setTimeout(() => uploadController.abort(), resolvedContentType.startsWith('video/') ? 120000 : 20000);
     const uploadResponse = await fetch(uploadUrl, {
       method: 'POST',
       headers: {
@@ -1566,12 +1566,14 @@ export async function uploadToSupabaseStorage(
     return { url: publicUrl, error: null };
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
-      if (__DEV__) console.warn('[Supabase Storage] Upload timed out after 20s');
+      console.warn('[Supabase Storage] Upload timed out after', resolvedContentType.startsWith('video/') ? '120s' : '20s');
       return {
         url: null,
         error: {
           name: 'Error',
-          message: 'Photo upload timed out. Please try a smaller photo or retake the photo.',
+          message: resolvedContentType.startsWith('video/')
+            ? 'Video upload timed out. Please try a shorter video or check your connection.'
+            : 'Photo upload timed out. Please try a smaller photo or retake the photo.',
         } as SupabaseError,
       };
     }

@@ -7,14 +7,14 @@ let _initialized = false;
 export function getPostHog(): PostHog | undefined {
   if (_initialized) return _instance;
   _initialized = true;
+  console.log('[BOOT] PostHog: starting constructor');
   try {
     _instance = new PostHog('phc_fLhsKyhZSYWV0fGN8u7WCOI2H6cCQz4WzwHUrnRoXAg', {
       host: 'https://app.posthog.com',
     });
-    if (__DEV__) console.log('[Startup] PostHog initialized');
+    console.log('[BOOT] PostHog: constructor ok');
   } catch (e) {
-    if (__DEV__)
-      console.log('[Startup] PostHog init threw — analytics disabled for this session:', e);
+    console.warn('[BOOT] PostHog: constructor failed (non-fatal):', e instanceof Error ? e.message : String(e));
   }
   return _instance;
 }

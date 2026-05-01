@@ -16,15 +16,29 @@ import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { supabase, isSupabaseConfigured, getValidSession } from './supabase';
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+/**
+ * Set the global notification handler.
+ *
+ * MUST be called inside a React useEffect (after native modules are ready),
+ * never at module scope — calling it before native init causes SIGABRT on
+ * first-install iOS cold launch.
+ */
+export function initNotificationHandler(): void {
+  try {
+    Notifications.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowAlert: true,
+        shouldPlaySound: true,
+        shouldSetBadge: true,
+        shouldShowBanner: true,
+        shouldShowList: true,
+      }),
+    });
+    if (__DEV__) console.log('[Startup] push init done');
+  } catch (e) {
+    if (__DEV__) console.log('[Startup] push init fail (non-fatal):', e instanceof Error ? e.message : String(e));
+  }
+}
 
 // Types for Supabase tables
 export interface UserPushToken {

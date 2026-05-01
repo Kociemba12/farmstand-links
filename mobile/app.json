@@ -22,7 +22,7 @@
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Farmstand: Fresh and Local uses your location to display your position on in-app maps and surface nearby points of interest.",
         "NSCameraUsageDescription": "Farmstand: Fresh and Local uses the camera to capture photos inside the app before you publish them.",
-        "NSPhotoLibraryUsageDescription": "Farmstand: Fresh and Local accesses your photo library to let you choose videos that appear in the app.",
+        "NSPhotoLibraryUsageDescription": "Farmstand: Fresh and Local accesses your photo library to let you choose photos and videos for your farmstand listing.",
         "ITSAppUsesNonExemptEncryption": false,
         "UIBackgroundModes": [
           "remote-notification"

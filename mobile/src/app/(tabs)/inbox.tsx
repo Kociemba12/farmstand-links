@@ -575,6 +575,11 @@ export default function InboxScreen() {
   const dismissedConvDataRef = useRef<Map<string, string>>(new Map());
   useEffect(() => { dismissedConvDataRef.current = dismissedConvData; }, [dismissedConvData]);
 
+  // Tracks whether the AsyncStorage dismissed-keys load has completed. Used by
+  // loadConversations to avoid the race condition where it fires (via useFocusEffect)
+  // before the separate useEffect that reads AsyncStorage has resolved.
+  const dismissedLoadedRef = useRef(false);
+
   const dismissedStorageKey = user?.id ? `dismissed_convs_v2_${user.id}` : null;
   // Ref mirror of dismissedStorageKey for the same stale-closure reason.
   const dismissedStorageKeyRef = useRef<string | null>(null);
@@ -585,19 +590,27 @@ export default function InboxScreen() {
   // before the mark-read POST has propagated back to the server.
   const recentlyReadRef = useRef<Map<string, number>>(new Map()); // key → Date.now() ms
 
-  // Load persisted dismissed data on mount / user change
+  // Load persisted dismissed data on mount / user change.
+  // Always marks dismissedLoadedRef=true on completion so loadConversations
+  // knows it's safe to filter without re-loading from AsyncStorage.
   useEffect(() => {
-    if (!dismissedStorageKey) return;
+    if (!dismissedStorageKey) {
+      dismissedLoadedRef.current = true;
+      return;
+    }
     AsyncStorage.getItem(dismissedStorageKey)
       .then((raw) => {
         if (raw) {
           const parsed = JSON.parse(raw) as Record<string, string>;
           const entries = Object.entries(parsed);
           console.log(`[Inbox][DismissedKeys] loaded ${entries.length} dismissed key(s) for user ${user?.id}`);
-          setDismissedConvData(new Map(entries));
+          const map = new Map(entries);
+          dismissedConvDataRef.current = map; // sync ref first so any in-flight loadConversations sees the data
+          setDismissedConvData(map);
         }
+        dismissedLoadedRef.current = true;
       })
-      .catch(() => {});
+      .catch(() => { dismissedLoadedRef.current = true; });
   }, [dismissedStorageKey, user?.id]);
 
   const persistDismissedEntry = useCallback((convKey: string) => {
@@ -641,7 +654,7 @@ export default function InboxScreen() {
       });
       if (res.ok) {
         const rawRows = await res.json() as ConversationRow[];
-        if (__DEV__) console.log('[Inbox] rows from public.conversations before soft-delete filter:', rawRows.length);
+        console.log('[InboxLoad] loaded', rawRows.length, 'conversations from server');
 
         // Filter out rows soft-deleted by this user. Auto-unhide if a new message
         // arrived after the deletion timestamp (matches backend auto-unhide behavior).
@@ -651,7 +664,7 @@ export default function InboxScreen() {
           if (!deletedAt) return true;
           // Auto-unhide: new message arrived after user deleted the thread
           if (row.last_message_at && row.last_message_at > deletedAt) {
-            if (__DEV__) console.log(`[Inbox] auto-unhide: new message after soft-delete — clearing column for conversation id=${row.id}`);
+            console.log(`[InboxLoad] auto-unhide: new message after soft-delete — clearing column for conversation id=${row.id}`);
             const patchCol = isOwner ? 'deleted_by_owner_at' : 'deleted_by_customer_at';
             const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
             fetch(`${supabaseUrl}/rest/v1/conversations?id=eq.${row.id}`, {
@@ -666,10 +679,10 @@ export default function InboxScreen() {
             }).catch(() => {});
             return true;
           }
-          if (__DEV__) console.log(`[Inbox] filtering out soft-deleted conversation id=${row.id} role=${isOwner ? 'owner' : 'customer'} deletedAt=${deletedAt}`);
+          console.log(`[InboxLoad] filtering out soft-deleted conversation id=${row.id} role=${isOwner ? 'owner' : 'customer'} deletedAt=${deletedAt}`);
           return false;
         });
-        if (__DEV__) console.log('[Inbox] inbox conversation count after soft-delete filter:', rows.length, '(filtered out:', rawRows.length - rows.length, ')');
+        console.log('[InboxLoad] after server soft-delete filter:', rows.length, '(filtered out', rawRows.length - rows.length, 'soft-deleted by user)');
 
         const convs: Conversation[] = rows.map(row => {
           const viewerIsOwner = row.owner_id === user.id;
@@ -691,6 +704,21 @@ export default function InboxScreen() {
             viewer_is_owner: viewerIsOwner,
           };
         });
+
+        // Guard against AsyncStorage race: if dismissed data hasn't been loaded yet
+        // (loadConversations fired before the useEffect that reads AsyncStorage resolved),
+        // load it inline now so deleted threads are correctly filtered on this first render.
+        if (!dismissedLoadedRef.current && dismissedStorageKeyRef.current) {
+          try {
+            const raw = await AsyncStorage.getItem(dismissedStorageKeyRef.current);
+            if (raw) {
+              const map = new Map(Object.entries(JSON.parse(raw) as Record<string, string>));
+              dismissedConvDataRef.current = map;
+              setDismissedConvData(map);
+            }
+            dismissedLoadedRef.current = true;
+          } catch { dismissedLoadedRef.current = true; }
+        }
 
         // Always read from the ref — not from the closure — so even a stale callback
         // (e.g. the one captured inside handleDeleteConfirm before state updated) uses
@@ -736,7 +764,7 @@ export default function InboxScreen() {
             }
             return c;
           });
-        console.log(`[Inbox] after dismissed-key filter: ${filtered.length}/${beforeFilter} (skipped ${beforeFilter - filtered.length} dismissed)`);
+        console.log(`[InboxLoad] filtered hidden/deleted conversations: showing ${filtered.length}/${beforeFilter} (skipped ${beforeFilter - filtered.length} locally dismissed)`);
         setConversations(filtered);
         // Fallback: if inbox has no visible threads, the badge must be 0.
         if (filtered.length === 0) {
@@ -824,7 +852,7 @@ export default function InboxScreen() {
     setConvToDelete(null);
 
     const convKey = `${deleted.farmstand_id}__${deleted.other_user_id}`;
-    console.log(`[Inbox] dismissing conversation: userId=${user?.id} farmstand_id=${deleted.farmstand_id} other_user_id=${deleted.other_user_id} farmstand_deleted=${deleted.farmstand_deleted}`);
+    console.log(`[InboxDelete] deleting thread id=${convKey} userId=${user?.id} role=${deleted.viewer_is_owner ? 'owner' : 'customer'}`);
 
     // If the conversation had unread messages, mark it read BEFORE hiding it.
     // This ensures message_reads.db is updated even if hide-thread fails —
@@ -852,8 +880,6 @@ export default function InboxScreen() {
         const customerId = isOwner ? deleted.other_user_id : user!.id;
         const patchCol = isOwner ? 'deleted_by_owner_at' : 'deleted_by_customer_at';
         const deletedAt = new Date().toISOString();
-        if (__DEV__) console.log(`[Inbox] soft-delete PATCH — col=${patchCol} userId=${user?.id} role=${isOwner ? 'owner' : 'customer'} conversationKey=${convKey} deletedAt=${deletedAt}`);
-
         // ── Soft-delete in conversations table (primary persistence) ───────────
         try {
           const patchUrl = `${supabaseUrl}/rest/v1/conversations?farmstand_id=eq.${deleted.farmstand_id}&customer_id=eq.${customerId}&owner_id=eq.${ownerId}`;
@@ -863,20 +889,27 @@ export default function InboxScreen() {
               apikey: supabaseAnonKey,
               Authorization: `Bearer ${session.access_token}`,
               'Content-Type': 'application/json',
-              Prefer: 'return=minimal',
+              // return=representation lets us detect 0-rows-updated (RLS blocked)
+              // vs a genuine success — return=minimal gives 204 for both cases.
+              Prefer: 'return=representation',
             },
             body: JSON.stringify({ [patchCol]: deletedAt }),
           });
-          if (__DEV__) {
-            if (patchRes.ok) {
-              console.log(`[Inbox] soft-delete PATCH succeeded for conversationKey=${convKey}`);
+          if (patchRes.ok) {
+            const updatedRows = await patchRes.json() as unknown[];
+            if (updatedRows.length > 0) {
+              console.log(`[InboxDelete] delete success threadKey=${convKey} rows=${updatedRows.length}`);
             } else {
-              const errText = await patchRes.text();
-              console.log(`[Inbox] soft-delete PATCH failed: ${patchRes.status} ${errText.slice(0, 200)}`);
+              // 0 rows updated = RLS blocked the UPDATE (policy type mismatch or missing policy).
+              // Local dismiss is still active via AsyncStorage. Run supabase-conversations-soft-delete-fix.sql to fix.
+              console.log(`[InboxDelete] delete failed (0 rows updated — RLS may be blocking UPDATE on conversations) threadKey=${convKey} col=${patchCol}`);
             }
+          } else {
+            const errText = await patchRes.text();
+            console.log(`[InboxDelete] delete failed status=${patchRes.status} body=${errText.slice(0, 200)} threadKey=${convKey}`);
           }
         } catch (patchErr) {
-          if (__DEV__) console.log('[Inbox] soft-delete PATCH exception:', patchErr instanceof Error ? patchErr.message : String(patchErr));
+          console.log('[InboxDelete] delete failed (exception):', patchErr instanceof Error ? patchErr.message : String(patchErr));
         }
 
         // ── Backend hide-thread (belt-and-suspenders for SQLite + hidden_threads) ──
@@ -892,23 +925,18 @@ export default function InboxScreen() {
               other_user_id: deleted.other_user_id,
             }),
           });
-          if (__DEV__) {
-            if (res.ok) {
-              console.log(`[Inbox] hide-thread API succeeded for key=${convKey}`);
-            } else {
-              const errText = await res.text();
-              console.log(`[Inbox] hide-thread API error: ${res.status} ${errText}`);
-            }
+          if (!res.ok) {
+            const errText = await res.text();
+            console.log(`[InboxDelete] hide-thread API error: ${res.status} ${errText.slice(0, 200)}`);
           }
         }
       }
     } catch (err) {
-      if (__DEV__) console.log('[Inbox] delete exception:', err instanceof Error ? err.message : String(err));
+      console.log('[InboxDelete] delete failed (outer exception):', err instanceof Error ? err.message : String(err));
     }
 
     // Refetch from server — dismissed key filter will catch any that slip through
     await loadConversations(true);
-    console.log(`[Inbox] inbox count after dismiss refetch: ${conversations.length}`);
   };
 
   // ── Alert handlers ─────────────────────────────────────────────────────────

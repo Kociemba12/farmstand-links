@@ -37,7 +37,7 @@ import {
   markClaimApprovedModalAsSeen,
   usePremiumOnboardingStore,
 } from '@/lib/premium-onboarding-store';
-import { prepareForPurchase } from '@/lib/revenuecat';
+import { prepareForPurchase, isRevenueCatReady } from '@/lib/revenuecat';
 import { useBootstrapStore } from '@/lib/bootstrap-store';
 import { getValidSession } from '@/lib/supabase';
 import { trackEvent } from '@/lib/track';
@@ -207,6 +207,8 @@ export default function PremiumOnboardingScreen() {
   const [purchasing, setPurchasing] = useState(false);
   const [purchaseSuccess, setPurchaseSuccess] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
+  // RC readiness state — starts false; flipped to true by the lazy-init effect below.
+  const [rcReady, setRcReady] = useState(() => isRevenueCatReady());
 
   // Guard: ensure the mark-as-seen + store-clear logic only runs once,
   // even if this component re-renders or React StrictMode mounts it twice.
@@ -258,12 +260,21 @@ export default function PremiumOnboardingScreen() {
     [refreshUserFarmstands]
   );
 
+  // Lazy-init RC when the user opens this screen (explicitly user-triggered).
   useEffect(() => {
+    if (rcReady) return;
+    const { ok } = prepareForPurchase();
+    if (ok) setRcReady(true);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Subscribe to customerInfo updates only after RC is configured.
+  useEffect(() => {
+    if (!rcReady) return;
     Purchases.addCustomerInfoUpdateListener(handleCustomerInfoUpdate);
     return () => {
       Purchases.removeCustomerInfoUpdateListener(handleCustomerInfoUpdate);
     };
-  }, [handleCustomerInfoUpdate]);
+  }, [handleCustomerInfoUpdate, rcReady]);
 
   const handleRestore = async () => {
     trackEvent('restore_purchase_tapped', { source: 'premium_onboarding', farmstand_id: targetFarmstandId || null });
@@ -352,8 +363,18 @@ export default function PremiumOnboardingScreen() {
 
     setPurchasing(true);
     try {
-      console.log('[PremiumPurchase] Calling Purchases.getOfferings()...');
-      const offerings = await Purchases.getOfferings();
+      let offerings;
+      try {
+        console.log('[RC] offerings fetch starting');
+        console.log('[PremiumPurchase] Calling Purchases.getOfferings()...');
+        offerings = await Purchases.getOfferings();
+      } catch (fetchErr: unknown) {
+        const fetchErrMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+        console.log('[RC] offerings fetch failed', fetchErrMsg);
+        Alert.alert('Subscription Unavailable', 'Unable to load subscription options. Please check your connection and try again.', [{ text: 'OK' }]);
+        setPurchasing(false);
+        return;
+      }
       const currentOfferingId = offerings.current?.identifier ?? 'none';
       const allOfferingKeys = Object.keys(offerings.all ?? {}).join(', ') || 'none';
       console.log('[PremiumPurchase] Offerings — current:', currentOfferingId, '| allKeys:', allOfferingKeys);
