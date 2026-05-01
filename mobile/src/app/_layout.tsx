@@ -912,14 +912,9 @@ export default function RootLayout() {
           console.warn('[BOOT] notification handler failed (non-fatal):', e instanceof Error ? e.message : String(e));
         }
 
-        // Step 2: Splash screen — preventAutoHideAsync must come before hideAsync.
-        console.log('[BOOT] Step 2/4: splash screen');
-        try {
-          await SplashScreen.preventAutoHideAsync();
-          console.log('[BOOT] splash preventAutoHide ok');
-        } catch (e) {
-          console.warn('[BOOT] splash preventAutoHide failed (non-fatal):', e instanceof Error ? e.message : String(e));
-        }
+        // Step 2: Splash screen — expo-router already calls _internal_preventAutoHideAsync
+        // before first render, so we only need hideAsync here.
+        console.log('[BOOT] Step 2/4: splash screen hideAsync');
         try {
           await SplashScreen.hideAsync();
           console.log('[BOOT] splash hidden');
@@ -948,16 +943,16 @@ export default function RootLayout() {
   useEffect(() => {
     if (fontsLoaded && !bootstrapStarted.current) {
       bootstrapStarted.current = true;
-      if (__DEV__) console.log('[Startup] auth bootstrap start');
+      console.log('[BOOT PHASE] auth bootstrap start');
       (async () => {
         try {
           await bootstrap();
-          if (__DEV__) console.log('[Startup] auth bootstrap done');
+          console.log('[BOOT PHASE] auth bootstrap done');
         } catch (e) {
-          if (__DEV__) console.log('[Startup] auth bootstrap fail:', e instanceof Error ? e.message : String(e));
+          console.log('[BOOT PHASE] auth bootstrap fail:', e instanceof Error ? e.message : String(e));
         }
       })().catch((e) => {
-        if (__DEV__) console.log('[Startup] auth bootstrap uncaught:', e instanceof Error ? e.message : String(e));
+        console.log('[BOOT PHASE] auth bootstrap uncaught:', e instanceof Error ? e.message : String(e));
       });
     }
   }, [fontsLoaded, bootstrap]);
@@ -1011,6 +1006,7 @@ export default function RootLayout() {
   }, [triggerDismiss]);
 
   // ── Render: app always mounts (once fonts load), splash overlays on top ───
+  console.log('[BOOT PHASE] RootLayout render — fontsLoaded:', fontsLoaded, 'appReady:', appReady);
   return (
     <PostHogProvider client={posthogClient}>
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#F4F1E8' }}>

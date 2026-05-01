@@ -268,48 +268,52 @@ const hasAnonKey = Boolean(supabaseAnonKey && supabaseAnonKey.length > 20);
 // These lines are visible in Xcode console (TestFlight) and expo.log (dev)
 // Prefix [BUILD_DIAG] makes them easy to grep from device logs
 // ============================================================
-const _easProjectId: string =
-  (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.eas
-    ? ((Constants.expoConfig?.extra as { eas?: { projectId?: string } }).eas?.projectId ?? 'NOT_SET')
-    : 'NOT_SET';
-const _appSlug: string = Constants.expoConfig?.slug ?? 'UNKNOWN';
-const _appVersion: string = Constants.expoConfig?.version ?? 'UNKNOWN';
-const _bundleId: string =
-  (Constants.expoConfig?.ios as { bundleIdentifier?: string } | undefined)?.bundleIdentifier ?? 'UNKNOWN';
-const _backendUrl: string =
-  process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL ||
-  process.env.EXPO_PUBLIC_BACKEND_URL ||
-  'NOT_SET';
+try {
+  const _easProjectId: string =
+    (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.eas
+      ? ((Constants.expoConfig?.extra as { eas?: { projectId?: string } }).eas?.projectId ?? 'NOT_SET')
+      : 'NOT_SET';
+  const _appSlug: string = Constants.expoConfig?.slug ?? 'UNKNOWN';
+  const _appVersion: string = Constants.expoConfig?.version ?? 'UNKNOWN';
+  const _bundleId: string =
+    (Constants.expoConfig?.ios as { bundleIdentifier?: string } | undefined)?.bundleIdentifier ?? 'UNKNOWN';
+  const _backendUrl: string =
+    process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL ||
+    process.env.EXPO_PUBLIC_BACKEND_URL ||
+    'NOT_SET';
 
-console.log('='.repeat(60));
-console.log('[BUILD_DIAG] === FARMSTAND BUILD DIAGNOSTICS ===');
-console.log('[BUILD_DIAG] EAS Project ID     :', _easProjectId);
-console.log('[BUILD_DIAG] App slug           :', _appSlug);
-console.log('[BUILD_DIAG] App version        :', _appVersion);
-console.log('[BUILD_DIAG] iOS Bundle ID      :', _bundleId);
-console.log('[BUILD_DIAG] __DEV__            :', __DEV__);
-console.log('[BUILD_DIAG] Backend URL        :', _backendUrl || 'NOT_SET');
-console.log('[BUILD_DIAG] Supabase URL       :', supabaseUrl || 'NOT_SET');
-console.log('[BUILD_DIAG] Supabase host      :', supabaseUrl ? (() => { try { return new URL(supabaseUrl).hostname; } catch { return 'PARSE_ERROR'; } })() : 'NOT_SET');
-console.log('[BUILD_DIAG] Anon Key prefix    :', supabaseAnonKey ? supabaseAnonKey.slice(0, 12) + '...' : 'NOT_SET');
-console.log('[BUILD_DIAG] Anon Key length    :', supabaseAnonKey ? supabaseAnonKey.length : 0);
-if (_easProjectId === 'NOT_SET' || _easProjectId === 'YOUR_EAS_PROJECT_ID') {
-  console.log('[BUILD_DIAG] ⚠ WARNING: EAS projectId is a placeholder — OTA updates will NOT work!');
-  console.log('[BUILD_DIAG]   Fix: update app.json extra.eas.projectId with your real EAS project ID');
-}
-console.log('='.repeat(60));
+  console.log('='.repeat(60));
+  console.log('[BUILD_DIAG] === FARMSTAND BUILD DIAGNOSTICS ===');
+  console.log('[BUILD_DIAG] EAS Project ID     :', _easProjectId);
+  console.log('[BUILD_DIAG] App slug           :', _appSlug);
+  console.log('[BUILD_DIAG] App version        :', _appVersion);
+  console.log('[BUILD_DIAG] iOS Bundle ID      :', _bundleId);
+  console.log('[BUILD_DIAG] __DEV__            :', __DEV__);
+  console.log('[BUILD_DIAG] Backend URL        :', _backendUrl || 'NOT_SET');
+  console.log('[BUILD_DIAG] Supabase URL       :', supabaseUrl || 'NOT_SET');
+  console.log('[BUILD_DIAG] Supabase host      :', supabaseUrl ? (() => { try { return new URL(supabaseUrl).hostname; } catch { return 'PARSE_ERROR'; } })() : 'NOT_SET');
+  console.log('[BUILD_DIAG] Anon Key prefix    :', supabaseAnonKey ? supabaseAnonKey.slice(0, 12) + '...' : 'NOT_SET');
+  console.log('[BUILD_DIAG] Anon Key length    :', supabaseAnonKey ? supabaseAnonKey.length : 0);
+  if (_easProjectId === 'NOT_SET' || _easProjectId === 'YOUR_EAS_PROJECT_ID') {
+    console.log('[BUILD_DIAG] ⚠ WARNING: EAS projectId is a placeholder — OTA updates will NOT work!');
+    console.log('[BUILD_DIAG]   Fix: update app.json extra.eas.projectId with your real EAS project ID');
+  }
+  console.log('='.repeat(60));
 
-// Log configuration status at startup (visible in expo.log / TestFlight logs)
-// Shows first 10 chars of key so we can confirm the RIGHT project is baked into the build
-console.log('[Supabase Config]');
-console.log('  URL:', supabaseUrl || 'UNDEFINED - MISSING EXPO_PUBLIC_SUPABASE_URL');
-console.log('  Anon Key (first 10):', supabaseAnonKey ? supabaseAnonKey.slice(0, 10) + '...' : 'UNDEFINED - MISSING EXPO_PUBLIC_SUPABASE_ANON_KEY');
-console.log('  Anon Key length:', supabaseAnonKey ? supabaseAnonKey.length : 0);
-console.log('  Status:', hasUrl && hasAnonKey ? 'CONFIGURED' : 'NOT CONFIGURED');
-if (!hasUrl || !hasAnonKey) {
-  console.log('  ACTION REQUIRED: Add Supabase credentials in eas.json env block or Vibecode ENV tab');
+  // Log configuration status at startup (visible in expo.log / TestFlight logs)
+  // Shows first 10 chars of key so we can confirm the RIGHT project is baked into the build
+  console.log('[Supabase Config]');
+  console.log('  URL:', supabaseUrl || 'UNDEFINED - MISSING EXPO_PUBLIC_SUPABASE_URL');
+  console.log('  Anon Key (first 10):', supabaseAnonKey ? supabaseAnonKey.slice(0, 10) + '...' : 'UNDEFINED - MISSING EXPO_PUBLIC_SUPABASE_ANON_KEY');
+  console.log('  Anon Key length:', supabaseAnonKey ? supabaseAnonKey.length : 0);
+  console.log('  Status:', hasUrl && hasAnonKey ? 'CONFIGURED' : 'NOT CONFIGURED');
+  if (!hasUrl || !hasAnonKey) {
+    console.log('  ACTION REQUIRED: Add Supabase credentials in eas.json env block or Vibecode ENV tab');
+  }
+  console.log('='.repeat(60));
+} catch (diagErr) {
+  console.warn('[BUILD_DIAG] diagnostics block threw (non-fatal):', diagErr instanceof Error ? diagErr.message : String(diagErr));
 }
-console.log('='.repeat(60));
 
 // Check if Supabase is configured
 export const isSupabaseConfigured = (): boolean => {
