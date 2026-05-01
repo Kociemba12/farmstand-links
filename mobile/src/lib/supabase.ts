@@ -41,6 +41,44 @@ let currentSession: {
 
 // Flag to track if we've loaded the session from SecureStore
 let sessionLoaded = false;
+// Promise lock — prevents concurrent calls from both triggering the migration write simultaneously.
+// Bootstrap and AuthProvider both call loadSessionFromStorage on startup; without this lock both
+// could pass the sessionLoaded check, both find SecureStore empty, and both call setItemAsync for
+// the same key → SecItemAdd fires twice → errSecDuplicateItem (-25299) → SIGABRT.
+let loadSessionPromise: Promise<void> | null = null;
+
+/**
+ * Safe SecureStore write helper.
+ * Wraps setItemAsync with duplicate-item recovery: if the OS returns errSecDuplicateItem
+ * (-25299), we delete the existing item then add again rather than letting the error surface.
+ * Returns true on success, false on unrecoverable failure. Never throws.
+ */
+async function secureStoreSetSafe(key: string, value: string): Promise<boolean> {
+  console.log('[Keychain] write starting key=' + key);
+  try {
+    await SecureStore.setItemAsync(key, value);
+    console.log('[Keychain] write success key=' + key);
+    return true;
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const isDuplicate = errMsg.includes('-25299') || /duplicate/i.test(errMsg);
+    if (isDuplicate) {
+      console.log('[Keychain] duplicate item handled key=' + key);
+      try { await SecureStore.deleteItemAsync(key); } catch { /* ignore — item may already be gone */ }
+      try {
+        await SecureStore.setItemAsync(key, value);
+        console.log('[Keychain] write success key=' + key + ' (after duplicate-item recovery)');
+        return true;
+      } catch (retryErr) {
+        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        console.log('[Keychain] write failed key=' + key + ' error=' + retryMsg + ' (after duplicate-item recovery)');
+        return false;
+      }
+    }
+    console.log('[Keychain] write failed key=' + key + ' error=' + errMsg);
+    return false;
+  }
+}
 
 /**
  * Load session from SecureStore (call on app startup)
@@ -49,6 +87,13 @@ let sessionLoaded = false;
  * copy it into SecureStore and delete the AsyncStorage key.
  */
 export async function loadSessionFromStorage(): Promise<void> {
+  if (sessionLoaded) return;
+  if (loadSessionPromise) return loadSessionPromise;
+  loadSessionPromise = _doLoadSessionFromStorage().finally(() => { loadSessionPromise = null; });
+  return loadSessionPromise;
+}
+
+async function _doLoadSessionFromStorage(): Promise<void> {
   if (sessionLoaded) return;
 
   try {
@@ -62,8 +107,8 @@ export async function loadSessionFromStorage(): Promise<void> {
           const asyncParsed = JSON.parse(asyncRaw) as { access_token?: string; refresh_token?: string; expires_at?: number };
           if (asyncParsed.access_token && asyncParsed.refresh_token) {
             console.log('[Supabase Auth] Migration: copying session from AsyncStorage → SecureStore');
-            await SecureStore.setItemAsync(SESSION_STORAGE_KEY, asyncRaw);
-            stored = asyncRaw;
+            const migrationOk = await secureStoreSetSafe(SESSION_STORAGE_KEY, asyncRaw);
+            if (migrationOk) stored = asyncRaw;
           }
         }
         // Always delete the AsyncStorage key after migration attempt
@@ -143,7 +188,8 @@ async function saveSessionToStorage(session: { access_token: string; refresh_tok
         refresh_token: session.refresh_token,
         expires_at: session.expires_at,
       });
-      await SecureStore.setItemAsync(SESSION_STORAGE_KEY, minimal);
+      const writeOk = await secureStoreSetSafe(SESSION_STORAGE_KEY, minimal);
+      if (!writeOk) return false;
       console.log('[Supabase Auth] Session saved to SecureStore, expires_at:', session.expires_at, 'length:', minimal.length);
 
       // Read-back verification — confirm the write actually landed
@@ -155,7 +201,14 @@ async function saveSessionToStorage(session: { access_token: string; refresh_tok
       console.log('[Supabase Auth] SecureStore write confirmed by read-back, length:', readback.length);
       return true;
     } else {
-      await SecureStore.deleteItemAsync(SESSION_STORAGE_KEY);
+      console.log('[Keychain] write starting key=' + SESSION_STORAGE_KEY + ' (delete)');
+      try {
+        await SecureStore.deleteItemAsync(SESSION_STORAGE_KEY);
+        console.log('[Keychain] write success key=' + SESSION_STORAGE_KEY + ' (deleted)');
+      } catch (delErr) {
+        const errMsg = delErr instanceof Error ? delErr.message : String(delErr);
+        console.log('[Keychain] write failed key=' + SESSION_STORAGE_KEY + ' error=' + errMsg);
+      }
       console.log('[Supabase Auth] Session cleared from SecureStore');
       return true;
     }
@@ -607,13 +660,15 @@ export async function debugSecureStore(): Promise<{
 
   try {
     const writeValue = String(Date.now());
-    await SecureStore.setItemAsync(TEST_KEY, writeValue);
-    const readback = await SecureStore.getItemAsync(TEST_KEY);
-    testWriteWorked = readback === writeValue;
-    testValue = readback;
-    console.log('[debugSecureStore] test write value:', writeValue, 'readback:', readback, 'match:', testWriteWorked);
+    const writeOk = await secureStoreSetSafe(TEST_KEY, writeValue);
+    if (writeOk) {
+      const readback = await SecureStore.getItemAsync(TEST_KEY);
+      testWriteWorked = readback === writeValue;
+      testValue = readback;
+      console.log('[debugSecureStore] test write value:', writeValue, 'readback:', readback, 'match:', testWriteWorked);
+    }
   } catch (e) {
-    console.log('[debugSecureStore] error on test write/read:', e instanceof Error ? e.message : String(e));
+    console.log('[debugSecureStore] error on test read-back:', e instanceof Error ? e.message : String(e));
   }
 
   return { hasSessionKey, sessionLength, testWriteWorked, testValue };
