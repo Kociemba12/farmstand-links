@@ -872,10 +872,14 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
 export default function RootLayout() {
   const colorScheme = useColorScheme();
 
-  // Lazy-init PostHog inside the component lifecycle (never at module eval time).
-  // useState initializer runs once synchronously on first render, safely after
-  // all native modules have been loaded.
-  const [posthogClient] = useState(() => getPostHog());
+  // PostHog disabled at startup for diagnostic build (POSTHOG_STARTUP_ENABLED=false).
+  // getPostHog() returns undefined immediately when disabled.
+  const [posthogClient] = useState<ReturnType<typeof getPostHog>>(undefined);
+
+  // Set to true after the 2500ms deferred-native-init timer fires.
+  // KeyboardProvider (and the full app tree) only mounts once this is true,
+  // preventing native-module init from racing with app startup.
+  const [nativeModulesReady, setNativeModulesReady] = useState(false);
 
   // ── Splash state ──────────────────────────────────────────────────────────
   // splashVisible: keeps the Animated.View in the tree during fade-out
@@ -897,62 +901,70 @@ export default function RootLayout() {
     LibreBaskerville_400Regular,
   });
 
+  // ── Immediate boot: only the splash hide, nothing else ───────────────────
+  // Keeps the startup path clean — no native-module touches until the
+  // deferred timer below fires (2500ms after mount).
   useEffect(() => {
+    console.log('[Startup] RootLayout mounted');
     (async () => {
+      console.log('[Startup] first paint complete');
+      console.log('[Startup] hiding splash');
       try {
-        console.log('[BOOT] App starting');
-
-        // Step 1: Notification handler — must be in useEffect, never at module scope.
-        // Running at module scope caused SIGABRT on first TestFlight install (build 179).
-        console.log('[BOOT] Step 1/4: notification handler');
-        try {
-          initNotificationHandler();
-          console.log('[BOOT] notification handler ok');
-        } catch (e) {
-          console.warn('[BOOT] notification handler failed (non-fatal):', e instanceof Error ? e.message : String(e));
-        }
-
-        // Step 2: Splash screen — expo-router already calls _internal_preventAutoHideAsync
-        // before first render, so we only need hideAsync here.
-        console.log('[BOOT] Step 2/4: splash screen hideAsync');
-        try {
-          await SplashScreen.hideAsync();
-          console.log('[BOOT] splash hidden');
-        } catch (e) {
-          console.warn('[BOOT] splash hideAsync failed (non-fatal):', e instanceof Error ? e.message : String(e));
-        }
-
-        // Step 3: RevenueCat — initRevenueCat() is fully self-contained with its own
-        // try/catch; it will not throw. Outer catch here is belt-and-suspenders.
-        console.log('[BOOT] Step 3/4: RevenueCat');
-        initRevenueCat();
-
-        // Step 4: PostHog — getPostHog() never throws; returns undefined on failure.
-        console.log('[BOOT] Step 4/4: PostHog');
-        const ph = getPostHog();
-        console.log('[BOOT] PostHog ready:', ph != null);
-
-        console.log('[BOOT] All startup steps complete');
+        await SplashScreen.hideAsync();
+        console.log('[Startup] splash hide success');
       } catch (e) {
-        console.error('[BOOT ERROR] Unexpected startup failure:', e instanceof Error ? e.message : String(e), e);
+        console.warn('[Startup] splash hide failure:', e instanceof Error ? e.message : String(e));
       }
+      console.log('[Startup] scheduling deferred native init in 2500ms');
     })();
+  }, []);
+
+  // ── Deferred boot: optional native SDKs + KeyboardProvider enable ─────────
+  // All native-module init is delayed until 2500ms after first mount.
+  // This prevents StoreKit / KeyboardController / notification native modules
+  // from racing with UIApplicationMain startup (SIGABRT isolation build 185).
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      console.log('[Startup] deferred native init starting');
+
+      console.log('[Startup] Step 1/3: notification handler');
+      try {
+        initNotificationHandler();
+        console.log('[Startup] notification handler ok');
+      } catch (e) {
+        console.warn('[Startup] notification handler failed (non-fatal):', e instanceof Error ? e.message : String(e));
+      }
+
+      console.log('[Startup] Step 2/3: RevenueCat');
+      try {
+        initRevenueCat(); // returns immediately — REVENUECAT_STARTUP_ENABLED=false
+      } catch (e) {
+        console.warn('[Startup] RevenueCat init failed (non-fatal):', e instanceof Error ? e.message : String(e));
+      }
+
+      console.log('[Startup] Step 3/3: PostHog');
+      // getPostHog() returns undefined immediately — POSTHOG_STARTUP_ENABLED=false
+
+      console.log('[Startup] deferred native init complete — enabling KeyboardProvider');
+      setNativeModulesReady(true);
+    }, 2500);
+    return () => clearTimeout(timer);
   }, []);
 
   // Start bootstrap ONCE when fonts are loaded
   useEffect(() => {
     if (fontsLoaded && !bootstrapStarted.current) {
       bootstrapStarted.current = true;
-      console.log('[BOOT PHASE] auth bootstrap start');
+      console.log('[Startup] starting auth bootstrap');
       (async () => {
         try {
           await bootstrap();
-          console.log('[BOOT PHASE] auth bootstrap done');
+          console.log('[Startup] auth bootstrap done');
         } catch (e) {
-          console.log('[BOOT PHASE] auth bootstrap fail:', e instanceof Error ? e.message : String(e));
+          console.log('[Startup] auth bootstrap fail:', e instanceof Error ? e.message : String(e));
         }
       })().catch((e) => {
-        console.log('[BOOT PHASE] auth bootstrap uncaught:', e instanceof Error ? e.message : String(e));
+        console.log('[Startup] auth bootstrap uncaught:', e instanceof Error ? e.message : String(e));
       });
     }
   }, [fontsLoaded, bootstrap]);
@@ -1005,13 +1017,21 @@ export default function RootLayout() {
     return () => clearTimeout(timer);
   }, [triggerDismiss]);
 
-  // ── Render: app always mounts (once fonts load), splash overlays on top ───
-  console.log('[BOOT PHASE] RootLayout render — fontsLoaded:', fontsLoaded, 'appReady:', appReady);
-  return (
-    <PostHogProvider client={posthogClient}>
+  // ── Render: full app tree deferred until native modules are ready ─────────
+  // nativeModulesReady becomes true 2500ms after mount (deferred useEffect above).
+  // This prevents KeyboardProvider (react-native-keyboard-controller) and other
+  // native providers from initializing while UIApplicationMain is still settling.
+  // Splash overlay covers the screen for 3500ms, so users see no blank period.
+  console.log('[Startup] RootLayout render — fontsLoaded:', fontsLoaded, 'nativeModulesReady:', nativeModulesReady);
+
+  if (!posthogClient) {
+    console.log('[Startup] PostHog disabled — missing client/api key');
+  }
+
+  const appTree = (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#F4F1E8' }}>
       <StatusBar style={splashVisible ? 'light' : (colorScheme === 'dark' ? 'light' : 'dark')} />
-      {fontsLoaded && (
+      {fontsLoaded && nativeModulesReady && (
         <AuthProvider>
           <QueryClientProvider client={queryClient}>
             <KeyboardProvider>
@@ -1029,6 +1049,10 @@ export default function RootLayout() {
         </Animated.View>
       )}
     </GestureHandlerRootView>
-    </PostHogProvider>
   );
+
+  if (posthogClient) {
+    return <PostHogProvider client={posthogClient}>{appTree}</PostHogProvider>;
+  }
+  return appTree;
 }

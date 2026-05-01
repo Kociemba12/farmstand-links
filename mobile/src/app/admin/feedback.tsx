@@ -15,7 +15,7 @@ import {
   Image,
   StatusBar,
 } from 'react-native';
-import { KeyboardAwareScrollView, KeyboardStickyView, type KeyboardAwareScrollViewRef } from 'react-native-keyboard-controller';
+import { KeyboardAwareScrollView, KeyboardStickyView } from 'react-native-keyboard-controller';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -268,7 +268,7 @@ function AdminFeedbackContent() {
   const [replyText, setReplyText] = useState('');
   const [isSendingReply, setIsSendingReply] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
-  const scrollViewRef = useRef<KeyboardAwareScrollViewRef>(null);
+  const scrollViewRef = useRef<ScrollView>(null);
   const replyInputRef = useRef<TextInput>(null);
 
   // Image viewer state
