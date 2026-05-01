@@ -151,10 +151,11 @@ function SkeletonCard({ width, height }: { width: number; height: number }) {
   const opacity = useSharedValue(0.4);
   useEffect(() => {
     const pulse = () => {
+      'worklet';
       opacity.value = withTiming(1, { duration: 800 }, () => {
-        opacity.value =withTiming(0.4, { duration: 800 }, () => {
-  pulse();
-});;
+        opacity.value = withTiming(0.4, { duration: 800 }, () => {
+          pulse();
+        });
       });
     };
     pulse();
