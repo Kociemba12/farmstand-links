@@ -26,6 +26,7 @@ import Animated, {
   useAnimatedStyle,
   withSpring,
   withTiming,
+  runOnJS,
 } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -150,14 +151,24 @@ const filterBySmartRadius = (
 function SkeletonCard({ width, height }: { width: number; height: number }) {
   const opacity = useSharedValue(0.4);
   useEffect(() => {
+    const startPulse = () => {
+      pulse();
+    };
+
     const pulse = () => {
       'worklet';
-      opacity.value = withTiming(1, { duration: 800 }, () => {
-        opacity.value = withTiming(0.4, { duration: 800 }, () => {
-          pulse();
-        });
-      });
+
+      opacity.value = withTiming(1, { duration: 800 });
+
+      opacity.value = withTiming(
+        0.4,
+        { duration: 800 },
+        () => {
+          runOnJS(startPulse)();
+        }
+      );
     };
+
     pulse();
   }, [opacity]);
   const animStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));

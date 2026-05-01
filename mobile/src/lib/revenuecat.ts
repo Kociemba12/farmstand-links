@@ -14,10 +14,12 @@ import { Platform } from 'react-native';
 
 const IOS_KEY = process.env.EXPO_PUBLIC_REVENUECAT_API_KEY ?? '';
 
-// When false, the automatic app-startup configure() call is skipped entirely.
-// RevenueCat still lazy-initialises the first time the user opens the paywall.
-// Set to false to prevent StoreKit from sending requests before any user action.
-const STARTUP_REVENUECAT_ENABLED = false;
+// Diagnostic kill-switch. When false, the automatic app-startup configure() call
+// is skipped entirely. RevenueCat still lazy-initialises the first time the user
+// opens the paywall. Set to false to prevent StoreKit from touching native modules
+// during the first few seconds of launch (SIGABRT isolation).
+// Flip to true once the startup crash is resolved.
+const REVENUECAT_STARTUP_ENABLED = false;
 
 // Tracks whether configure() succeeded and it is safe to call Purchases methods.
 let _rcReady = false;
@@ -43,8 +45,8 @@ export function initRevenueCat(source: 'startup' | 'paywall' = 'startup'): void 
   try {
     // Startup guard: skip configure() on app launch to prevent StoreKit from
     // sending network requests before the user explicitly opens the paywall.
-    if (source === 'startup' && !STARTUP_REVENUECAT_ENABLED) {
-      console.log('[RC] skipped startup init');
+    if (source === 'startup' && !REVENUECAT_STARTUP_ENABLED) {
+      console.log('[Startup] skipping RevenueCat startup for diagnostic build');
       return;
     }
 
