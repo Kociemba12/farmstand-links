@@ -28,8 +28,15 @@ const supabaseAnonKey =
   process.env.SUPABASE_ANON_KEY ||
   '';
 
-// Session storage key for SecureStore
+// Session storage key for SecureStore / AsyncStorage fallback
 const SESSION_STORAGE_KEY = 'supabase-session';
+
+// TEMPORARY KILL SWITCH — set to false to bypass ALL SecureStore writes and use AsyncStorage
+// instead. Flip to true once the keychain duplicate-item (-25299) crash source is confirmed.
+// DO NOT remove this flag until the crash is fully debugged in TestFlight.
+const SECURESTORE_ENABLED = false;
+// Logged at module evaluation time — appears in every cold-start log (dev + TestFlight).
+if (!SECURESTORE_ENABLED) console.log('[KeychainAudit] SecureStore disabled at startup — all session writes routed to AsyncStorage');
 
 // In-memory cache of the session (loaded from SecureStore on init)
 // expires_at is REQUIRED and stored as Unix timestamp in seconds
@@ -49,11 +56,25 @@ let loadSessionPromise: Promise<void> | null = null;
 
 /**
  * Safe SecureStore write helper.
- * Wraps setItemAsync with duplicate-item recovery: if the OS returns errSecDuplicateItem
- * (-25299), we delete the existing item then add again rather than letting the error surface.
+ * When SECURESTORE_ENABLED=false: writes to AsyncStorage instead (kill switch).
+ * When enabled: wraps setItemAsync with duplicate-item recovery for errSecDuplicateItem (-25299).
  * Returns true on success, false on unrecoverable failure. Never throws.
  */
 async function secureStoreSetSafe(key: string, value: string): Promise<boolean> {
+  console.log('[KeychainAudit] secureStoreSetSafe called key=' + key);
+
+  if (!SECURESTORE_ENABLED) {
+    console.log('[KeychainAudit] SecureStore disabled — writing key=' + key + ' to AsyncStorage');
+    try {
+      await AsyncStorage.setItem(key, value);
+      console.log('[Keychain] write success key=' + key + ' (AsyncStorage fallback)');
+      return true;
+    } catch (err) {
+      console.log('[Keychain] write failed key=' + key + ' error=' + (err instanceof Error ? err.message : String(err)) + ' (AsyncStorage fallback)');
+      return false;
+    }
+  }
+
   console.log('[Keychain] write starting key=' + key);
   try {
     await SecureStore.setItemAsync(key, value);
@@ -63,8 +84,9 @@ async function secureStoreSetSafe(key: string, value: string): Promise<boolean> 
     const errMsg = err instanceof Error ? err.message : String(err);
     const isDuplicate = errMsg.includes('-25299') || /duplicate/i.test(errMsg);
     if (isDuplicate) {
+      console.log('[KeychainAudit] duplicate item handled key=' + key);
       console.log('[Keychain] duplicate item handled key=' + key);
-      try { await SecureStore.deleteItemAsync(key); } catch { /* ignore — item may already be gone */ }
+      try { await SecureStore.deleteItemAsync(key); } catch (delErr) { if (__DEV__) console.warn('[KeychainAudit] deleteItemAsync failed during duplicate recovery key=' + key, delErr); }
       try {
         await SecureStore.setItemAsync(key, value);
         console.log('[Keychain] write success key=' + key + ' (after duplicate-item recovery)');
@@ -97,10 +119,17 @@ async function _doLoadSessionFromStorage(): Promise<void> {
   if (sessionLoaded) return;
 
   try {
-    let stored = await SecureStore.getItemAsync(SESSION_STORAGE_KEY);
+    // When SecureStore is disabled, read from AsyncStorage directly.
+    let stored: string | null;
+    if (!SECURESTORE_ENABLED) {
+      console.log('[KeychainAudit] SecureStore disabled — reading session from AsyncStorage');
+      stored = await AsyncStorage.getItem(SESSION_STORAGE_KEY);
+    } else {
+      stored = await SecureStore.getItemAsync(SESSION_STORAGE_KEY);
+    }
 
-    // === ONE-TIME MIGRATION: AsyncStorage → SecureStore ===
-    if (!stored) {
+    // === ONE-TIME MIGRATION: AsyncStorage → SecureStore (only runs when SecureStore is enabled) ===
+    if (!stored && SECURESTORE_ENABLED) {
       try {
         const asyncRaw = await AsyncStorage.getItem('supabase_session');
         if (asyncRaw) {
@@ -180,6 +209,7 @@ async function _doLoadSessionFromStorage(): Promise<void> {
  * Returns true if the write was confirmed by a read-back, false otherwise.
  */
 async function saveSessionToStorage(session: { access_token: string; refresh_token: string; expires_at: number } | null): Promise<boolean> {
+  console.log('[KeychainAudit] storage adapter setItem called key=' + SESSION_STORAGE_KEY + (session ? '' : ' (delete)'));
   try {
     if (session) {
       // Store ONLY minimal data — avoids potential size-limit issues in SecureStore
@@ -190,17 +220,28 @@ async function saveSessionToStorage(session: { access_token: string; refresh_tok
       });
       const writeOk = await secureStoreSetSafe(SESSION_STORAGE_KEY, minimal);
       if (!writeOk) return false;
-      console.log('[Supabase Auth] Session saved to SecureStore, expires_at:', session.expires_at, 'length:', minimal.length);
+      console.log('[Supabase Auth] Session saved, expires_at:', session.expires_at, 'length:', minimal.length, SECURESTORE_ENABLED ? '(SecureStore)' : '(AsyncStorage)');
 
-      // Read-back verification — confirm the write actually landed
-      const readback = await SecureStore.getItemAsync(SESSION_STORAGE_KEY);
-      if (!readback) {
-        console.log('[Supabase Auth] CRITICAL: SecureStore write appeared to succeed but read-back returned null — keychain access issue?');
-        return false;
+      // Read-back verification — only when SecureStore is active
+      if (SECURESTORE_ENABLED) {
+        const readback = await SecureStore.getItemAsync(SESSION_STORAGE_KEY);
+        if (!readback) {
+          console.log('[Supabase Auth] CRITICAL: SecureStore write appeared to succeed but read-back returned null — keychain access issue?');
+          return false;
+        }
+        console.log('[Supabase Auth] SecureStore write confirmed by read-back, length:', readback.length);
       }
-      console.log('[Supabase Auth] SecureStore write confirmed by read-back, length:', readback.length);
       return true;
     } else {
+      if (!SECURESTORE_ENABLED) {
+        try {
+          await AsyncStorage.removeItem(SESSION_STORAGE_KEY);
+          console.log('[Supabase Auth] Session cleared from AsyncStorage (SecureStore disabled)');
+        } catch (err) {
+          console.log('[Keychain] write failed key=' + SESSION_STORAGE_KEY + ' error=' + (err instanceof Error ? err.message : String(err)) + ' (AsyncStorage delete)');
+        }
+        return true;
+      }
       console.log('[Keychain] write starting key=' + SESSION_STORAGE_KEY + ' (delete)');
       try {
         await SecureStore.deleteItemAsync(SESSION_STORAGE_KEY);
@@ -213,7 +254,7 @@ async function saveSessionToStorage(session: { access_token: string; refresh_tok
       return true;
     }
   } catch (err) {
-    console.log('[Supabase Auth] Error saving session to SecureStore:', err instanceof Error ? err.message : 'Unknown');
+    console.log('[Supabase Auth] Error saving session to storage:', err instanceof Error ? err.message : 'Unknown');
     return false;
   }
 }
@@ -594,9 +635,11 @@ export async function ensureSessionReady(
     // Wait before retry
     await new Promise(resolve => setTimeout(resolve, delayMs));
 
-    // Try to load from SecureStore again (in case it was saved during the delay)
+    // Try to load from storage again (in case it was saved during the delay)
     try {
-      const stored = await SecureStore.getItemAsync(SESSION_STORAGE_KEY);
+      const stored = SECURESTORE_ENABLED
+        ? await SecureStore.getItemAsync(SESSION_STORAGE_KEY)
+        : await AsyncStorage.getItem(SESSION_STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
         if (parsed.access_token && parsed.refresh_token) {
@@ -611,7 +654,7 @@ export async function ensureSessionReady(
         }
       }
     } catch (err) {
-      console.log('[Supabase Auth] ensureSessionReady: Error reading from SecureStore:', err instanceof Error ? err.message : 'Unknown');
+      console.log('[Supabase Auth] ensureSessionReady: Error reading from storage:', err instanceof Error ? err.message : 'Unknown');
     }
 
     // Also try refreshing the session if we have a refresh token
