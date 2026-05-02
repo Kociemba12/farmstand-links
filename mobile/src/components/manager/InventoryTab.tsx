@@ -277,9 +277,12 @@ export function InventoryTab({ farmstandId, onInventoryChanged }: InventoryTabPr
   const handleAdjust = useCallback(async (item: InventoryItem, delta: number) => {
     const ok = await adjustInventoryQuantity(item.id, delta, item.quantity, farmstandId);
     if (ok) {
+      const newQty = Math.max(0, item.quantity + delta);
+      if (__DEV__) console.log('[FarmstandManager QuantitySync] inventory quantity adjusted:', item.item_name, item.quantity, '→', newQty);
       setItems((prev) =>
-        prev.map((i) => i.id === item.id ? { ...i, quantity: Math.max(0, i.quantity + delta) } : i)
+        prev.map((i) => i.id === item.id ? { ...i, quantity: newQty } : i)
       );
+      if (__DEV__) console.log('[FarmstandManager QuantitySync] local state refreshed');
       onInventoryChanged?.();
     }
   }, [onInventoryChanged]);

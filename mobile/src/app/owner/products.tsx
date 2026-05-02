@@ -20,6 +20,7 @@ import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import {
   ArrowLeft,
   Plus,
+  Minus,
   Package,
   DollarSign,
   Edit3,
@@ -36,6 +37,8 @@ import {
   Lock,
   Zap,
 } from 'lucide-react-native';
+import { fetchInventory, updateInventoryItem, createInventoryItem } from '@/lib/manager-service';
+import type { InventoryItem } from '@/lib/manager-types';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import Animated, { FadeInDown, FadeIn, SlideInRight } from 'react-native-reanimated';
@@ -93,6 +96,7 @@ interface ProductFormData {
   stock_note: string;
   seasonal: string;
   photo_url: string;
+  inventoryQuantity: string;
 }
 
 const initialFormData: ProductFormData = {
@@ -105,6 +109,7 @@ const initialFormData: ProductFormData = {
   stock_note: '',
   seasonal: '',
   photo_url: '',
+  inventoryQuantity: '0',
 };
 
 export default function ProductsScreen() {
@@ -142,6 +147,20 @@ export default function ProductsScreen() {
   const [showCategoryPicker, setShowCategoryPicker] = useState(false);
   const [showUnitPicker, setShowUnitPicker] = useState(false);
   const [showPhotoOptions, setShowPhotoOptions] = useState(false);
+
+  // farmstand_inventory is the single source of truth for quantity
+  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
+
+  const loadInventory = useCallback(async () => {
+    if (!farmstandId) return;
+    try {
+      const items = await fetchInventory(farmstandId);
+      setInventoryItems(items);
+      if (__DEV__) console.log('[FarmstandManager QuantitySync] local state refreshed — inventory items:', items.length);
+    } catch (err) {
+      if (__DEV__) console.log('[FarmstandManager QuantitySync] inventory load error:', err);
+    }
+  }, [farmstandId]);
 
   // Check authorization
   useEffect(() => {
@@ -186,12 +205,13 @@ export default function ProductsScreen() {
 
         // Fetch from Supabase (source of truth)
         await fetchProductsForFarmstand(farmstandId);
+        await loadInventory();
       }
       setIsLoading(false);
     };
 
     load();
-  }, [farmstandId]);
+  }, [farmstandId, loadInventory]);
 
   // Re-fetch from Supabase every time the screen gains focus
   // NOTE: useCallback deps intentionally exclude isLoading to avoid stale closure—
@@ -201,8 +221,9 @@ export default function ProductsScreen() {
       if (farmstandId) {
         console.log('[Products] Screen focused — refreshing from Supabase, farmstand_id:', farmstandId);
         fetchProductsForFarmstand(farmstandId);
+        loadInventory();
       }
-    }, [farmstandId])
+    }, [farmstandId, loadInventory])
   );
 
   // Re-fetch when app returns from background
@@ -233,6 +254,11 @@ export default function ProductsScreen() {
   }, [farmstandId, user?.id]);
 
   const openEditModal = useCallback((product: Product) => {
+    const inventoryItem = inventoryItems.find(
+      (item) => item.item_name.trim().toLowerCase() === product.name.trim().toLowerCase()
+    );
+    const inventoryQuantity = inventoryItem != null ? String(inventoryItem.quantity) : '0';
+    if (__DEV__) console.log('[FarmstandManager QuantitySync] product quantity loaded:', product.name, '→ qty:', inventoryQuantity, '(inventory item:', inventoryItem?.id ?? 'none', ')');
     setFormData({
       name: product.name,
       category: product.category,
@@ -243,10 +269,11 @@ export default function ProductsScreen() {
       stock_note: product.stock_note || '',
       seasonal: product.seasonal || '',
       photo_url: product.photo_url || '',
+      inventoryQuantity,
     });
     setEditingProduct(product);
     setShowAddModal(true);
-  }, []);
+  }, [inventoryItems]);
 
   const closeModal = useCallback(() => {
     setShowAddModal(false);
@@ -329,6 +356,36 @@ export default function ProductsScreen() {
       }
 
       logFarmstandEdit(farmstandId, ['products'], user.id);
+
+      // Sync quantity to farmstand_inventory — it is the single source of truth
+      try {
+        const newQty = Math.max(0, parseFloat(formData.inventoryQuantity) || 0);
+        const productName = formData.name.trim();
+        const matchingItem = inventoryItems.find(
+          (item) => item.item_name.trim().toLowerCase() === productName.toLowerCase()
+        );
+        if (matchingItem) {
+          await updateInventoryItem(matchingItem.id, { quantity: newQty }, { farmstand_id: farmstandId });
+        } else if (newQty > 0) {
+          await createInventoryItem({
+            farmstand_id: farmstandId,
+            item_name: productName,
+            category: formData.category,
+            quantity: newQty,
+            unit: formData.unit,
+            price: formData.price.trim() ? parseFloat(formData.price) : null,
+            low_stock_threshold: 5,
+            notes: null,
+            is_active: true,
+          });
+        }
+        if (__DEV__) console.log('[FarmstandManager QuantitySync] product quantity saved:', productName, '=', newQty);
+        await loadInventory();
+        if (__DEV__) console.log('[FarmstandManager QuantitySync] local state refreshed');
+      } catch (syncErr) {
+        if (__DEV__) console.log('[FarmstandManager QuantitySync] inventory sync error (non-fatal):', syncErr);
+      }
+
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       closeModal();
 
@@ -890,6 +947,39 @@ export default function ProductsScreen() {
                 trackColor={{ false: '#fca5a5', true: '#86efac' }}
                 thumbColor={formData.is_in_stock ? '#16a34a' : '#ef4444'}
               />
+            </View>
+
+            {/* In Stock Quantity */}
+            <View className="mb-4">
+              <Text className="text-sm font-medium text-gray-700 mb-2">In Stock Quantity</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#F3F4F6', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12 }}>
+                <Pressable
+                  onPress={() => {
+                    const current = parseFloat(formData.inventoryQuantity) || 0;
+                    updateField('inventoryQuantity', String(Math.max(0, current - 1)));
+                  }}
+                  style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#FEF2F2', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  <Minus size={16} color="#DC2626" />
+                </Pressable>
+                <TextInput
+                  value={formData.inventoryQuantity}
+                  onChangeText={(v) => {
+                    if (/^\d*$/.test(v)) updateField('inventoryQuantity', v);
+                  }}
+                  keyboardType="number-pad"
+                  style={{ flex: 1, fontSize: 20, fontWeight: '700', color: '#111827', textAlign: 'center' }}
+                />
+                <Pressable
+                  onPress={() => {
+                    const current = parseFloat(formData.inventoryQuantity) || 0;
+                    updateField('inventoryQuantity', String(current + 1));
+                  }}
+                  style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#F0FDF4', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  <Plus size={16} color="#16a34a" />
+                </Pressable>
+              </View>
             </View>
 
             {/* Stock Note */}

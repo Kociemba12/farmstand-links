@@ -561,72 +561,35 @@ function buildCsvContent(
   inventory: InventoryItem[]
 ): string {
   const dateLabel = DATE_RANGE_LABELS[report.dateRange.preset];
-  const generatedAt = new Date(report.generatedAt).toISOString().slice(0, 10);
-  const sections: string[] = [];
+  const rows: string[] = [];
 
-  // ── Sheet 1: Summary (one header row + one data row) ──────────────────────
-  sections.push(csvRow(['Farmstand', 'Period', 'Generated', 'Revenue', 'Expenses', 'Net Profit', 'Inventory Value']));
-  sections.push(csvRow([
-    report.farmstandName,
-    dateLabel,
-    generatedAt,
-    report.summary.revenue.toFixed(2),
-    report.summary.expenses.toFixed(2),
-    report.summary.netProfit.toFixed(2),
-    report.summary.inventoryValue.toFixed(2),
-  ]));
+  // ── Section 1: Summary (Metric / Value pairs) ──────────────────────────────
+  rows.push(csvRow(['Metric', 'Value']));
+  rows.push(csvRow(['Farmstand', report.farmstandName]));
+  rows.push(csvRow(['Period', dateLabel]));
+  rows.push(csvRow(['Revenue', report.summary.revenue.toFixed(2)]));
+  rows.push(csvRow(['Expenses', report.summary.expenses.toFixed(2)]));
+  rows.push(csvRow(['Net Profit', report.summary.netProfit.toFixed(2)]));
+  rows.push(csvRow(['Inventory Value', report.summary.inventoryValue.toFixed(2)]));
 
-  // ── Sheet 2: Transactions (sales + expenses flat list) ─────────────────────
-  if (report.recentActivity.length > 0) {
-    sections.push('');
-    sections.push(csvRow(['Type', 'Item', 'Amount', 'Date']));
-    report.recentActivity.forEach((a) => {
-      const dateStr = new Date(a.timestamp).toISOString().slice(0, 10);
-      sections.push(csvRow([
-        a.type === 'sale' ? 'Sale' : 'Expense',
-        a.label,
-        a.amount != null ? a.amount.toFixed(2) : '0.00',
-        dateStr,
-      ]));
-    });
-  }
+  // ── Blank separator ────────────────────────────────────────────────────────
+  rows.push('');
 
-  // ── Sheet 3: Top sellers ───────────────────────────────────────────────────
-  if (report.topSellingItems.length > 0) {
-    sections.push('');
-    sections.push(csvRow(['Item', 'Quantity Sold', 'Revenue']));
-    report.topSellingItems.slice(0, 10).forEach((item) => {
-      sections.push(csvRow([item.item_name, item.totalQuantity, item.totalRevenue.toFixed(2)]));
-    });
-  }
+  // ── Section 2: Inventory ───────────────────────────────────────────────────
+  rows.push(csvRow(['Item', 'Category', 'Quantity', 'Unit', 'Price', 'Value']));
+  inventory.forEach((item) => {
+    const value = item.price != null ? (item.quantity * item.price).toFixed(2) : '';
+    rows.push(csvRow([
+      item.item_name,
+      item.category ?? '',
+      item.quantity,
+      item.unit,
+      item.price != null ? item.price.toFixed(2) : '',
+      value,
+    ]));
+  });
 
-  // ── Sheet 4: Expenses by category ─────────────────────────────────────────
-  if (report.expenseBreakdown.length > 0) {
-    sections.push('');
-    sections.push(csvRow(['Category', 'Amount', 'Percentage']));
-    report.expenseBreakdown.forEach((eb) => {
-      sections.push(csvRow([eb.label, eb.total.toFixed(2), `${eb.percentage}%`]));
-    });
-  }
-
-  // ── Sheet 5: Inventory ─────────────────────────────────────────────────────
-  if (inventory.length > 0) {
-    sections.push('');
-    sections.push(csvRow(['Item', 'Category', 'Quantity', 'Unit', 'Price', 'Est. Value']));
-    inventory.forEach((item) => {
-      const estValue = item.price != null ? (item.quantity * item.price).toFixed(2) : '';
-      sections.push(csvRow([
-        item.item_name,
-        item.category ?? '',
-        item.quantity,
-        item.unit,
-        item.price != null ? item.price.toFixed(2) : '',
-        estValue,
-      ]));
-    });
-  }
-
-  return sections.join('\n');
+  return rows.join('\n');
 }
 
 export async function exportToCsv(

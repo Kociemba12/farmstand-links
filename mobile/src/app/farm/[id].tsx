@@ -14,7 +14,7 @@ import { useFavoritesStore } from '@/lib/favorites-store';
 import { useReviewsStore } from '@/lib/reviews-store';
 import { useUserStore } from '@/lib/user-store';
 import { usePromotionsStore } from '@/lib/promotions-store';
-import { useProductsStore, Product, PRODUCT_CATEGORY_LABELS } from '@/lib/products-store';
+import { useProductsStore, Product } from '@/lib/products-store';
 import { PhotoGalleryModal } from '@/components/PhotoGalleryModal';
 import { ClaimFarmstandForm } from '@/components/ClaimFarmstandForm';
 import { SignInPromptModal } from '@/components/SignInPromptModal';
@@ -117,6 +117,10 @@ export default function FarmDetailScreen() {
 
   // Product detail modal state
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+
+  // Inventory quantities for stock count display
+  type InventoryQtyEntry = { item_name: string; quantity: number };
+  const [inventoryItems, setInventoryItems] = useState<InventoryQtyEntry[]>([]);
 
   // Verified tooltip modal state
   const [showVerifiedTooltip, setShowVerifiedTooltip] = useState(false);
@@ -338,6 +342,55 @@ export default function FarmDetailScreen() {
   const claimOverridesRef = useRef(claimOverrides);
   useEffect(() => { claimOverridesRef.current = claimOverrides; }, [claimOverrides]);
 
+  const loadInventory = useCallback(async () => {
+    if (!id || !isSupabaseConfigured()) return;
+    try {
+      // farmstand_inventory requires auth — use session key; anon is blocked by RLS
+      const { data, error } = await supabase
+        .from('farmstand_inventory')
+        .select('item_name, quantity')
+        .eq('farmstand_id', id)
+        .eq('is_active', true)
+        .requireAuth();
+      if (error) {
+        if (__DEV__) console.log('[FarmDetail InventoryQty] query error:', error);
+        return;
+      }
+      const items = (data ?? []) as InventoryQtyEntry[];
+      setInventoryItems(items);
+      if (__DEV__) {
+        console.log('[FarmDetail InventoryQty] inventory quantity loaded:', items.length, 'items for farmstand:', id);
+        items.forEach(item => console.log('[FarmDetail InventoryQty]  item:', JSON.stringify(item.item_name), 'qty:', item.quantity));
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message === 'AUTH_REQUIRED') {
+        if (__DEV__) console.log('[FarmDetail InventoryQty] no session — inventory quantities not available (not logged in)');
+        return;
+      }
+      if (__DEV__) console.log('[FarmDetail InventoryQty] load error (non-fatal):', err);
+    }
+  }, [id]);
+
+  const inventoryQuantityByName = useMemo(() => {
+    const map = new Map<string, number>();
+    inventoryItems.forEach((item) => {
+      map.set(item.item_name.trim().toLowerCase(), item.quantity);
+    });
+    return map;
+  }, [inventoryItems]);
+
+  useEffect(() => {
+    if (__DEV__ && selectedProduct) {
+      const key = selectedProduct.name.trim().toLowerCase();
+      const qty = inventoryQuantityByName.get(key);
+      const availableKeys = Array.from(inventoryQuantityByName.keys());
+      console.log('[PublicProductQty] rendering detail modal', selectedProduct.name, 'quantity=', qty ?? 'not found');
+      if (qty === undefined) {
+        console.log('[PublicProductQty] no match — product key:', JSON.stringify(key), '| inventory keys:', availableKeys.map(k => JSON.stringify(k)).join(', ') || '(empty)');
+      }
+    }
+  }, [selectedProduct, inventoryQuantityByName]);
+
   // Load farmstand data on mount and when returning to this screen
   // Uses refreshSingleFarmstand for efficiency (only fetches this farmstand)
   // Also fetch fresh claim state from Supabase
@@ -383,7 +436,8 @@ export default function FarmDetailScreen() {
       void fetchFreshClaimState().catch((e: unknown) => {
         if (__DEV__) console.warn('[FarmDetail] fetchFreshClaimState error:', e);
       });
-    }, [id, refreshSingleFarmstand, loadProducts, fetchProductsForFarmstand, fetchFreshClaimState])
+      void loadInventory().catch(() => {});
+    }, [id, refreshSingleFarmstand, loadProducts, fetchProductsForFarmstand, fetchFreshClaimState, loadInventory])
   );
 
   // AppState listener: re-fetch when app comes to foreground
@@ -408,12 +462,13 @@ export default function FarmDetailScreen() {
         loadProducts().then(() => {
           if (id) fetchProductsForFarmstand(id);
         }).catch(() => {});
+        void loadInventory().catch(() => {});
       }
       appStateRef.current = nextAppState;
     });
     return () => subscription.remove();
     // STABLE DEPS: only id and stable callbacks — claimOverrides accessed via ref
-  }, [id, fetchFreshClaimState, refreshSingleFarmstand, loadProducts, fetchProductsForFarmstand]);
+  }, [id, fetchFreshClaimState, refreshSingleFarmstand, loadProducts, fetchProductsForFarmstand, loadInventory]);
 
   // Find the farmstand from admin store
   const farmstand = useMemo(() => {
@@ -1370,18 +1425,23 @@ export default function FarmDetailScreen() {
                     if (a.is_in_stock !== b.is_in_stock) return a.is_in_stock ? -1 : 1;
                     return a.name.localeCompare(b.name);
                   })
-                  .map((product, index) => (
-                    <ProductCard
-                      key={product.id}
-                      product={product}
-                      index={index}
-                      onPress={() => {
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                        setSelectedProduct(product);
-                      }}
-                      badges={[]}
-                    />
-                  ))}
+                  .map((product, index) => {
+                    const stockQty = inventoryQuantityByName.get(product.name.trim().toLowerCase());
+                    if (__DEV__) console.log('[PublicProductQty] rendering product card', product.name, 'quantity=', stockQty ?? 'undefined');
+                    return (
+                      <ProductCard
+                        key={product.id}
+                        product={product}
+                        index={index}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          setSelectedProduct(product);
+                        }}
+                        badges={[]}
+                        stockCount={stockQty}
+                      />
+                    );
+                  })}
               </ScrollView>
             </Animated.View>
           )}
@@ -1572,13 +1632,15 @@ export default function FarmDetailScreen() {
 
               <View style={styles.productModalContent}>
                 <View style={styles.productModalHeader}>
-                  <View style={{ flex: 1, marginRight: 16 }}>
-                    <Text style={styles.productModalName}>{selectedProduct.name}</Text>
-                    <Text style={styles.productModalCategory}>{PRODUCT_CATEGORY_LABELS[selectedProduct.category]}</Text>
-                  </View>
+                  <Text style={[styles.productModalName, { flex: 1, marginRight: 16 }]}>{selectedProduct.name}</Text>
                   <View style={[styles.stockBadgeLarge, !selectedProduct.is_in_stock && styles.outOfStockBadgeLarge]}>
                     <Text style={[styles.stockTextLarge, !selectedProduct.is_in_stock && styles.outOfStockTextLarge]}>
-                      {selectedProduct.is_in_stock ? 'In Stock' : 'Out of Stock'}
+                      {(() => {
+                        if (!selectedProduct.is_in_stock) return 'Out of Stock';
+                        const qty = inventoryQuantityByName.get(selectedProduct.name.trim().toLowerCase());
+                        if (qty !== undefined && qty > 0) return `${qty} in stock`;
+                        return 'In Stock';
+                      })()}
                     </Text>
                   </View>
                 </View>
@@ -2780,6 +2842,21 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#8B6F4E',
     marginTop: 4,
+  },
+  productModalCategoryRow: {
+    marginBottom: 16,
+  },
+  productModalCategoryChip: {
+    alignSelf: 'flex-start' as const,
+    backgroundColor: '#F5F0EB',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  productModalCategoryChipText: {
+    fontSize: 12,
+    color: '#8B6F4E',
+    fontWeight: '500' as const,
   },
   stockBadgeLarge: {
     backgroundColor: '#E8F5E9',

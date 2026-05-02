@@ -487,10 +487,14 @@ function ExportSheet({
   exportType,
   errorMessage,
 }: ExportSheetProps) {
-  const slideAnim = useRef(new Animated.Value(400)).current;
+  // Start at 0 (open position) so the first rendered frame via animationType="fade" is correct
+  const slideAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     if (visible) {
+      if (__DEV__) console.log('[FarmstandManager ExportReportSheet] visible true');
+      if (__DEV__) console.log('[FarmstandManager ExportReportSheet] sheet JSX rendered');
+      if (__DEV__) console.log('[FarmstandManager ExportReportSheet] open animation started');
       Animated.spring(slideAnim, {
         toValue: 0,
         useNativeDriver: true,
@@ -498,11 +502,15 @@ function ExportSheet({
         stiffness: 240,
       }).start();
     } else {
+      if (__DEV__) console.log('[FarmstandManager ExportReportSheet] closed');
       Animated.timing(slideAnim, {
         toValue: 400,
         duration: 220,
         useNativeDriver: true,
-      }).start();
+      }).start(() => {
+        // Reset to open position so the next open also renders correctly
+        slideAnim.setValue(0);
+      });
     }
   }, [visible, slideAnim]);
 
@@ -768,6 +776,7 @@ export function ReportsTab({
   }, [load]);
 
   const handleOpenSheet = useCallback(() => {
+    if (__DEV__) console.log('[FarmstandManager ExportReportSheet] button pressed');
     setExportState('idle');
     setExportError('');
     setExportType(null);

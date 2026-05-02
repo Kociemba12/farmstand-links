@@ -108,7 +108,10 @@ export function ProductCard({
 
   const stockStatus = getStockStatus(product, stockCount, lowStockThreshold);
   const isSoldOut = stockStatus === 'sold_out';
-  const statusConfig = STOCK_STATUS_CONFIG[stockStatus];
+  // When showing a numeric count ("N in stock"), always use green regardless of low_stock threshold
+  const badgeConfig = (stockCount !== undefined && stockCount > 0)
+    ? STOCK_STATUS_CONFIG['in_stock']
+    : STOCK_STATUS_CONFIG[stockStatus];
 
   // Derive badges from product data
   const derivedBadges: ProductBadge[] = [...badges];
@@ -232,22 +235,19 @@ export function ProductCard({
             </Text>
           </View>
 
-          {/* Category */}
-          <Text style={styles.categoryText}>
-            {PRODUCT_CATEGORY_LABELS[product.category]}
-          </Text>
-
           {/* Bottom row: Stock status and rating */}
           <View style={styles.bottomRow}>
             {/* Stock badge */}
             <View
               style={[
                 styles.stockBadge,
-                { backgroundColor: statusConfig.bg },
+                { backgroundColor: badgeConfig.bg },
               ]}
             >
-              <Text style={[styles.stockText, { color: statusConfig.text }]}>
-                {statusConfig.label}
+              <Text style={[styles.stockText, { color: badgeConfig.text }]}>
+                {stockCount !== undefined && stockCount > 0
+                  ? `${stockCount} in stock`
+                  : badgeConfig.label}
               </Text>
             </View>
 
