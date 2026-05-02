@@ -561,33 +561,69 @@ function buildCsvContent(
   inventory: InventoryItem[]
 ): string {
   const dateLabel = DATE_RANGE_LABELS[report.dateRange.preset];
+  const generatedDate = new Date(report.generatedAt).toLocaleDateString('en-US', {
+    month: 'long', day: 'numeric', year: 'numeric',
+  });
   const rows: string[] = [];
 
-  // ── Section 1: Summary (Metric / Value pairs) ──────────────────────────────
-  rows.push(csvRow(['Metric', 'Value']));
-  rows.push(csvRow(['Farmstand', report.farmstandName]));
+  // ── HEADER ─────────────────────────────────────────────────────────────────
+  rows.push('HEADER');
+  rows.push(csvRow(['Report', report.farmstandName]));
   rows.push(csvRow(['Period', dateLabel]));
+  rows.push(csvRow(['Generated', generatedDate]));
+
+  // ── SUMMARY ────────────────────────────────────────────────────────────────
+  rows.push('');
+  rows.push('SUMMARY');
+  rows.push(csvRow(['Metric', 'Value']));
   rows.push(csvRow(['Revenue', report.summary.revenue.toFixed(2)]));
   rows.push(csvRow(['Expenses', report.summary.expenses.toFixed(2)]));
   rows.push(csvRow(['Net Profit', report.summary.netProfit.toFixed(2)]));
   rows.push(csvRow(['Inventory Value', report.summary.inventoryValue.toFixed(2)]));
 
-  // ── Blank separator ────────────────────────────────────────────────────────
+  // ── INVENTORY ──────────────────────────────────────────────────────────────
   rows.push('');
+  rows.push('INVENTORY');
+  if (inventory.length === 0) {
+    rows.push('(No inventory items)');
+  } else {
+    rows.push(csvRow(['Item', 'Category', 'Quantity', 'Unit', 'Price', 'Total Value']));
+    inventory.forEach((item) => {
+      const totalValue = item.price != null ? (item.quantity * item.price).toFixed(2) : '';
+      rows.push(csvRow([
+        item.item_name,
+        item.category ?? '',
+        item.quantity,
+        item.unit,
+        item.price != null ? item.price.toFixed(2) : '',
+        totalValue,
+      ]));
+    });
+  }
 
-  // ── Section 2: Inventory ───────────────────────────────────────────────────
-  rows.push(csvRow(['Item', 'Category', 'Quantity', 'Unit', 'Price', 'Value']));
-  inventory.forEach((item) => {
-    const value = item.price != null ? (item.quantity * item.price).toFixed(2) : '';
-    rows.push(csvRow([
-      item.item_name,
-      item.category ?? '',
-      item.quantity,
-      item.unit,
-      item.price != null ? item.price.toFixed(2) : '',
-      value,
-    ]));
-  });
+  // ── TOP SELLING ITEMS ──────────────────────────────────────────────────────
+  rows.push('');
+  rows.push('TOP SELLING ITEMS');
+  if (report.topSellingItems.length === 0) {
+    rows.push('(No sales recorded)');
+  } else {
+    rows.push(csvRow(['Item', 'Quantity Sold', 'Revenue']));
+    report.topSellingItems.forEach((item) => {
+      rows.push(csvRow([item.item_name, item.totalQuantity, item.totalRevenue.toFixed(2)]));
+    });
+  }
+
+  // ── EXPENSE BREAKDOWN ──────────────────────────────────────────────────────
+  rows.push('');
+  rows.push('EXPENSE BREAKDOWN');
+  if (report.expenseBreakdown.length === 0) {
+    rows.push('(No expenses recorded)');
+  } else {
+    rows.push(csvRow(['Category', 'Amount']));
+    report.expenseBreakdown.forEach((eb) => {
+      rows.push(csvRow([eb.label, eb.total.toFixed(2)]));
+    });
+  }
 
   return rows.join('\n');
 }

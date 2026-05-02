@@ -8,7 +8,10 @@ import {
   ActivityIndicator,
   Animated,
   Platform,
+  Dimensions,
 } from 'react-native';
+
+const SHEET_CLOSED_Y = Dimensions.get('window').height;
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FarmstandLogoPng } from '@/components/FarmstandLogoPng';
@@ -487,32 +490,7 @@ function ExportSheet({
   exportType,
   errorMessage,
 }: ExportSheetProps) {
-  // Start at 0 (open position) so the first rendered frame via animationType="fade" is correct
-  const slideAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    if (visible) {
-      if (__DEV__) console.log('[FarmstandManager ExportReportSheet] visible true');
-      if (__DEV__) console.log('[FarmstandManager ExportReportSheet] sheet JSX rendered');
-      if (__DEV__) console.log('[FarmstandManager ExportReportSheet] open animation started');
-      Animated.spring(slideAnim, {
-        toValue: 0,
-        useNativeDriver: true,
-        damping: 22,
-        stiffness: 240,
-      }).start();
-    } else {
-      if (__DEV__) console.log('[FarmstandManager ExportReportSheet] closed');
-      Animated.timing(slideAnim, {
-        toValue: 400,
-        duration: 220,
-        useNativeDriver: true,
-      }).start(() => {
-        // Reset to open position so the next open also renders correctly
-        slideAnim.setValue(0);
-      });
-    }
-  }, [visible, slideAnim]);
+  const insets = useSafeAreaInsets();
 
   const actions: {
     type: ExportType;
@@ -552,28 +530,33 @@ function ExportSheet({
     <Modal
       visible={visible}
       transparent
-      animationType="fade"
+      animationType="none"
       onRequestClose={onClose}
     >
+      {/* Backdrop */}
       <Pressable
-        style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' }}
+        style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)' }}
         onPress={exportState === 'loading' ? undefined : onClose}
+      />
+      {/* Sheet */}
+      <View
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: '#FDFAF7',
+          borderTopLeftRadius: 32,
+          borderTopRightRadius: 32,
+          paddingBottom: insets.bottom + 16,
+          maxHeight: '85%',
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: -6 },
+          shadowOpacity: 0.12,
+          shadowRadius: 28,
+          elevation: 24,
+        }}
       >
-        <Pressable onPress={() => {}} style={{ flex: 1 }} />
-        <Animated.View
-          style={{
-            transform: [{ translateY: slideAnim }],
-            backgroundColor: '#FDFAF7',
-            borderTopLeftRadius: 32,
-            borderTopRightRadius: 32,
-            paddingBottom: 40,
-            shadowColor: '#000',
-            shadowOffset: { width: 0, height: -6 },
-            shadowOpacity: 0.12,
-            shadowRadius: 28,
-            elevation: 24,
-          }}
-        >
           {/* Handle */}
           <View style={{ alignItems: 'center', paddingTop: 12, paddingBottom: 6 }}>
             <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: '#DDD5C8' }} />
@@ -613,51 +596,54 @@ function ExportSheet({
             )}
           </View>
 
-          {/* Status feedback */}
-          {exportState === 'success' && (
-            <View style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 10,
-              marginHorizontal: 20,
-              marginTop: 16,
-              backgroundColor: '#EDFAF2',
-              borderRadius: 14,
-              padding: 14,
-              borderWidth: 1,
-              borderColor: '#B6E8CC',
-            }}>
-              <CheckCircle size={18} color="#16a34a" />
-              <Text style={{ flex: 1, fontSize: 14, fontWeight: '600', color: '#15803d', lineHeight: 19 }}>
-                {exportType === 'pdf' ? 'PDF created — share sheet is open!' :
-                 exportType === 'csv' ? 'CSV exported — share sheet is open!' :
-                 'Report shared successfully!'}
-              </Text>
-            </View>
-          )}
+          {/* Scrollable body: status + action cards */}
+          <ScrollView
+            bounces={false}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingTop: 20, paddingHorizontal: 20, paddingBottom: 8, gap: 11 }}
+          >
+            {/* Status feedback */}
+            {exportState === 'success' && (
+              <View style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 10,
+                backgroundColor: '#EDFAF2',
+                borderRadius: 14,
+                padding: 14,
+                borderWidth: 1,
+                borderColor: '#B6E8CC',
+                marginBottom: 4,
+              }}>
+                <CheckCircle size={18} color="#16a34a" />
+                <Text style={{ flex: 1, fontSize: 14, fontWeight: '600', color: '#15803d', lineHeight: 19 }}>
+                  {exportType === 'pdf' ? 'PDF created — share sheet is open!' :
+                   exportType === 'csv' ? 'CSV exported — share sheet is open!' :
+                   'Report shared successfully!'}
+                </Text>
+              </View>
+            )}
 
-          {exportState === 'error' && (
-            <View style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 10,
-              marginHorizontal: 20,
-              marginTop: 16,
-              backgroundColor: '#FEF2F2',
-              borderRadius: 14,
-              padding: 14,
-              borderWidth: 1,
-              borderColor: '#FECACA',
-            }}>
-              <AlertCircle size={18} color="#DC2626" />
-              <Text style={{ flex: 1, fontSize: 14, fontWeight: '600', color: '#DC2626', lineHeight: 19 }}>
-                {errorMessage || 'Export failed. Please try again.'}
-              </Text>
-            </View>
-          )}
+            {exportState === 'error' && (
+              <View style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 10,
+                backgroundColor: '#FEF2F2',
+                borderRadius: 14,
+                padding: 14,
+                borderWidth: 1,
+                borderColor: '#FECACA',
+                marginBottom: 4,
+              }}>
+                <AlertCircle size={18} color="#DC2626" />
+                <Text style={{ flex: 1, fontSize: 14, fontWeight: '600', color: '#DC2626', lineHeight: 19 }}>
+                  {errorMessage || 'Export failed. Please try again.'}
+                </Text>
+              </View>
+            )}
 
-          {/* Action cards — one card per row */}
-          <View style={{ marginHorizontal: 20, marginTop: 20, gap: 11 }}>
+            {/* Action cards — one card per row */}
             {actions.map((action) => {
               const isRowLoading = exportState === 'loading' && exportType === action.type;
               const isDisabled = exportState === 'loading';
@@ -724,11 +710,8 @@ function ExportSheet({
                 </Pressable>
               );
             })}
-          </View>
-
-          <View style={{ height: 20 }} />
-        </Animated.View>
-      </Pressable>
+          </ScrollView>
+      </View>
     </Modal>
   );
 }

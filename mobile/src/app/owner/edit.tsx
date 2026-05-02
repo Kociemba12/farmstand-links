@@ -931,22 +931,46 @@ export default function OwnerEditScreen() {
       await new Promise((resolve) => setTimeout(resolve, 400));
     }
 
-    if (__DEV__) console.log('[EditFarm] pickVideo launching image library picker');
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-      allowsEditing: false,
-      quality: 0.3,
-    });
+    // H264_1280x720 forces iOS to re-encode through AVAssetExportSession before returning the URI.
+    // This converts HDR/Dolby Vision/HLG iPhone video to SDR H.264+BT.709, which prevents the
+    // washed-out/overexposed appearance in the full-screen video viewer.
+    // On Android this option is a no-op; the platform handles SDR display natively.
+    if (__DEV__) console.log('[EditFarm] pickVideo launching — iOS videoExportPreset: H264_1280x720 (SDR normalisation)');
+
+    let result: ImagePicker.ImagePickerResult;
+    try {
+      result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+        allowsEditing: false,
+        quality: 0.3,                                                       // image-only; no-op for video
+        videoExportPreset: ImagePicker.VideoExportPreset.H264_1280x720,     // iOS: re-encode to SDR H.264
+      });
+    } catch (pickerErr: unknown) {
+      // launchImageLibraryAsync can throw if the iOS transcode step fails (e.g. low storage).
+      const msg = pickerErr instanceof Error ? pickerErr.message : String(pickerErr);
+      console.log('[VideoUpload] picker/transcode error —', msg);
+      Alert.alert('Video Error', 'Could not process the video. Please try a different clip or free up storage.');
+      return;
+    }
 
     if (result.canceled || !result.assets[0]) {
       if (__DEV__) console.log('[EditFarm] pickVideo — picker cancelled or no asset');
       return;
     }
     const asset = result.assets[0];
+    const originalUri = asset.uri;
     const durationMs = asset.duration ?? null;
     const assetMimeType = (asset as { mimeType?: string }).mimeType ?? 'video/mp4';
     const assetFileSize = (asset as { fileSize?: number }).fileSize ?? null;
-    console.log('[VideoUpload] picker result — uri:', asset.uri.slice(0, 80), '| mimeType:', assetMimeType, '| durationMs:', durationMs, '| fileSize:', assetFileSize);
+
+    // Detect whether iOS actually re-encoded (transcoded .mov → .mp4 means SDR normalisation ran).
+    // On Android or when the source was already mp4, this will also be video/mp4.
+    const wasNormalised = Platform.OS === 'ios' && assetMimeType === 'video/mp4';
+    console.log('[VideoUpload] picker result — originalUri:', originalUri.slice(0, 80),
+      '| mimeType:', assetMimeType,
+      '| durationMs:', durationMs,
+      '| fileSize:', assetFileSize,
+      '| sdrNormalised:', wasNormalised);
 
     if (durationMs !== null && durationMs > MAX_VIDEO_DURATION_SECONDS * 1000) {
       console.log('[VideoUpload] picker rejected — video too long:', durationMs, 'ms, max:', MAX_VIDEO_DURATION_SECONDS * 1000);
@@ -955,14 +979,17 @@ export default function OwnerEditScreen() {
     }
 
     const durationSeconds = durationMs !== null ? Math.round(durationMs / 1000) : null;
-    console.log('[VideoUpload] selected — uri:', asset.uri.slice(0, 80), '| type:', assetMimeType, '| durationSeconds:', durationSeconds, '| fileSize:', assetFileSize);
+    console.log('[VideoUpload] selected — uri:', originalUri.slice(0, 80),
+      '| type:', assetMimeType,
+      '| durationSeconds:', durationSeconds,
+      '| normalised:', wasNormalised ? 'yes (H264/SDR)' : 'passthrough');
 
     // Optimistic preview — storagePath is null until upload completes
-    setLocalVideo({ uri: asset.uri, storagePath: null, uploading: true, failed: false, isLocalPreview: true, durationSeconds });
+    setLocalVideo({ uri: originalUri, storagePath: null, uploading: true, failed: false, isLocalPreview: true, durationSeconds });
 
-    uploadAndSaveVideo(asset.uri, durationSeconds, assetMimeType)
+    uploadAndSaveVideo(originalUri, durationSeconds, assetMimeType)
       .then(() => {
-        console.log('[VideoUpload] upload+save pipeline finished successfully');
+        console.log('[VideoUpload] upload+save pipeline finished successfully | sdrNormalised:', wasNormalised);
       })
       .catch((err: unknown) => {
         console.log('[VideoUpload] upload+save pipeline failed —', err instanceof Error ? err.message : String(err));

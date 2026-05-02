@@ -38,7 +38,7 @@ export function getStockStatus(item: InventoryItem): InventoryStockStatus {
 // SALES
 // ============================================================
 
-export type PaymentMethod = 'cash' | 'card' | 'venmo' | 'paypal' | 'zelle' | 'other';
+export type PaymentMethod = 'cash' | 'card' | 'venmo' | 'paypal' | 'zelle' | 'cash_app' | 'other';
 
 export interface Sale {
   id: string;

@@ -10,8 +10,9 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
-import { Plus, Receipt, Edit3, Trash2, X, Check } from 'lucide-react-native';
+import { Plus, Receipt, Edit3, Trash2, X, Check, Calendar } from 'lucide-react-native';
 import type { Expense, DateRange } from '@/lib/manager-types';
 import type { ExpenseInsert } from '@/lib/manager-types';
 import { EXPENSE_CATEGORIES } from '@/lib/manager-types';
@@ -113,12 +114,19 @@ function AnimatedChip({ label, active, onPress }: AnimatedChipProps) {
   );
 }
 
+const isToday = (date: Date): boolean => {
+  const t = new Date();
+  return date.getDate() === t.getDate() && date.getMonth() === t.getMonth() && date.getFullYear() === t.getFullYear();
+};
+
 export function ExpensesTab({ farmstandId, dateRange, onExpenseAdded, onExpenseChanged }: ExpensesTabProps) {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [modalVisible, setModalVisible] = useState<boolean>(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [form, setForm] = useState<ExpenseFormState>(emptyExpenseForm);
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [showDatePicker, setShowDatePicker] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
   const [toast, setToast] = useState<ToastState>({ visible: false, message: '', success: true });
   const [focusedField, setFocusedField] = useState<string | null>(null);
@@ -140,12 +148,13 @@ export function ExpensesTab({ farmstandId, dateRange, onExpenseAdded, onExpenseC
   const openAdd = useCallback(() => {
     setEditingExpense(null);
     setForm(emptyExpenseForm);
+    setSelectedDate(new Date());
+    setShowDatePicker(false);
     setModalVisible(true);
   }, []);
 
   const openEdit = useCallback((expense: Expense) => {
     setEditingExpense(expense);
-    // Display the stored category value as-is (could be a preset slug or a custom string)
     const catLabel = EXPENSE_CATEGORIES.find((c) => c.value === expense.category)?.label ?? expense.category;
     setForm({
       category: catLabel,
@@ -153,6 +162,8 @@ export function ExpensesTab({ farmstandId, dateRange, onExpenseAdded, onExpenseC
       amount: String(expense.amount),
       notes: expense.notes ?? '',
     });
+    setSelectedDate(new Date(expense.spent_at));
+    setShowDatePicker(false);
     setModalVisible(true);
   }, []);
 
@@ -160,6 +171,8 @@ export function ExpensesTab({ farmstandId, dateRange, onExpenseAdded, onExpenseC
     setModalVisible(false);
     setEditingExpense(null);
     setForm(emptyExpenseForm);
+    setSelectedDate(new Date());
+    setShowDatePicker(false);
   }, []);
 
   const updateForm = useCallback(<K extends keyof ExpenseFormState>(field: K, value: ExpenseFormState[K]) => {
@@ -192,6 +205,7 @@ export function ExpensesTab({ farmstandId, dateRange, onExpenseAdded, onExpenseC
           category: category as Expense['category'],
           vendor: form.vendor.trim() || null,
           amount,
+          spent_at: selectedDate.toISOString(),
           notes: form.notes.trim() || null,
         });
         if (ok) { showToast('Expense updated'); await load(); closeModal(); onExpenseChanged?.(); }
@@ -202,7 +216,7 @@ export function ExpensesTab({ farmstandId, dateRange, onExpenseAdded, onExpenseC
           category: category as Expense['category'],
           vendor: form.vendor.trim() || null,
           amount,
-          spent_at: new Date().toISOString(),
+          spent_at: selectedDate.toISOString(),
           notes: form.notes.trim() || null,
         };
         const created = await createExpense(insert);
@@ -442,19 +456,37 @@ export function ExpensesTab({ farmstandId, dateRange, onExpenseAdded, onExpenseC
             </View>
 
             {/* Date row */}
-            <View
-              style={{
-                flexDirection: 'row', alignItems: 'center', gap: 8,
-                backgroundColor: '#F1EEE8',
-                borderRadius: 12,
-                paddingVertical: 10, paddingHorizontal: 12,
-                borderWidth: 1, borderColor: '#E0DBD2',
-              }}
-            >
-              <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#8A7E74' }} />
-              <Text style={{ fontSize: 14, fontWeight: '500', color: '#6A5E54' }}>
-                Date: Today · {new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
-              </Text>
+            <View>
+              <Pressable
+                onPress={() => setShowDatePicker((v) => !v)}
+                style={{
+                  flexDirection: 'row', alignItems: 'center', gap: 8,
+                  backgroundColor: showDatePicker ? '#E8F0E9' : '#F1EEE8',
+                  borderRadius: 12,
+                  paddingVertical: 10, paddingHorizontal: 12,
+                  borderWidth: 1, borderColor: showDatePicker ? '#2F5D3A' : '#E0DBD2',
+                }}
+              >
+                <Calendar size={14} color="#8A7E74" />
+                <Text style={{ fontSize: 14, fontWeight: '500', color: '#6A5E54', flex: 1 }}>
+                  {isToday(selectedDate)
+                    ? `Today · ${selectedDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`
+                    : selectedDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
+                </Text>
+                <Text style={{ fontSize: 12, fontWeight: '600', color: '#2F5D3A' }}>
+                  {showDatePicker ? 'Done' : 'Change'}
+                </Text>
+              </Pressable>
+              {showDatePicker && (
+                <DateTimePicker
+                  value={selectedDate}
+                  mode="date"
+                  display="spinner"
+                  maximumDate={new Date()}
+                  onChange={(_: DateTimePickerEvent, date?: Date) => { if (date) setSelectedDate(date); }}
+                  style={{ backgroundColor: '#FFFFFF', borderRadius: 12, marginTop: 4 }}
+                />
+              )}
             </View>
 
             {/* Notes */}

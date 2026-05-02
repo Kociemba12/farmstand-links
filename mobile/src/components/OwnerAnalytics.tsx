@@ -39,6 +39,7 @@ import {
   Info,
 } from 'lucide-react-native';
 import Animated, { FadeInDown, FadeIn, SlideInUp } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAnalyticsStore, ListingHealth, RecommendedAction } from '@/lib/analytics-store';
 import { useAdminStore } from '@/lib/admin-store';
 import { useUserStore } from '@/lib/user-store';
@@ -162,6 +163,7 @@ interface MetricExplainSheetProps {
 }
 
 function MetricExplainSheet({ visible, onClose, metricKey }: MetricExplainSheetProps) {
+  const insets = useSafeAreaInsets();
   if (!visible || !metricKey) return null;
   const info = METRIC_EXPLANATIONS[metricKey];
   if (!info) return null;
@@ -172,7 +174,7 @@ function MetricExplainSheet({ visible, onClose, metricKey }: MetricExplainSheetP
         <Animated.View
           entering={SlideInUp.duration(300)}
           className="bg-white rounded-t-3xl"
-          style={{ maxHeight: '85%' }}
+          style={{ maxHeight: '92%' }}
           onStartShouldSetResponder={() => true}
         >
           {/* Handle */}
@@ -180,7 +182,7 @@ function MetricExplainSheet({ visible, onClose, metricKey }: MetricExplainSheetP
             <View className="w-10 h-1 bg-gray-300 rounded-full" />
           </View>
 
-          {/* Header */}
+          {/* Header — fixed, does not scroll */}
           <View className="flex-row items-center justify-between px-5 pb-4 border-b border-gray-100">
             <Text className="text-gray-900 font-bold text-lg">{info.title}</Text>
             <Pressable onPress={onClose} className="p-2 -mr-2">
@@ -188,11 +190,11 @@ function MetricExplainSheet({ visible, onClose, metricKey }: MetricExplainSheetP
             </Pressable>
           </View>
 
-          {/* Scrollable content — handles taller sheets like Intent Rate */}
+          {/* Scrollable content */}
           <ScrollView
-            showsVerticalScrollIndicator={false}
+            showsVerticalScrollIndicator={true}
             bounces={false}
-            contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: 8 }}
+            contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: insets.bottom + 40 }}
           >
             <View className="mb-4">
               <Text className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1.5">What it is</Text>
@@ -236,9 +238,6 @@ function MetricExplainSheet({ visible, onClose, metricKey }: MetricExplainSheetP
               </View>
             )}
           </ScrollView>
-
-          {/* Safe area padding */}
-          <View className="h-8" />
         </Animated.View>
       </Pressable>
     </Modal>
@@ -524,47 +523,73 @@ farmstand.app
 `;
   }, [farmstandName, funnelData, stats7Days, stats30Days, reviewStats]);
 
-  const generateCSV = useCallback(() => {
-    let csv = 'metric,value,period\n';
+  const buildAnalyticsCsv = useCallback(() => {
+    // Safe CSV cell: wrap in quotes only when value contains comma, quote, or newline
+    const c = (v: string | number | null | undefined): string => {
+      const s = v == null ? '' : String(v);
+      return (s.includes(',') || s.includes('"') || s.includes('\n'))
+        ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const row = (...cells: (string | number | null | undefined)[]) =>
+      cells.map(c).join(',');
 
-    // Funnel
-    csv += `Views,${funnelData.views},7d\n`;
-    csv += `Saves,${funnelData.saves},7d\n`;
-    csv += `Directions,${funnelData.directions},7d\n`;
-    csv += `Calls + Messages,${funnelData.callsAndMessages},7d\n`;
-    csv += `Intent Rate,${funnelData.intentRate.toFixed(2)},30d\n`;
-
-    // 7-day stats
-    csv += `Views,${stats7Days?.views || 0},7d\n`;
-    csv += `Saves,${stats7Days?.saves || 0},7d\n`;
-    csv += `Directions,${stats7Days?.directions || 0},7d\n`;
-    csv += `Calls,${stats7Days?.calls || 0},7d\n`;
-    csv += `Website,${stats7Days?.website || 0},7d\n`;
-    csv += `Shares,${stats7Days?.shares || 0},7d\n`;
-
-    // 30-day intent
-    csv += `Directions,${stats30Days?.directions || 0},30d\n`;
-    csv += `Calls,${stats30Days?.calls || 0},30d\n`;
-    csv += `Website,${stats30Days?.website || 0},30d\n`;
-    csv += `Shares,${stats30Days?.shares || 0},30d\n`;
-
-    // Reviews
-    csv += `Total Reviews,${reviewStats?.totalReviews || 0},all time\n`;
-    csv += `Average Rating,${reviewStats?.avgRating?.toFixed(2) || 0},all time\n`;
-    csv += `New Reviews,${reviewStats?.newReviews30Days || 0},30d\n`;
-
-    return csv;
+    return [
+      row('Metric', 'Last 7 Days', 'Last 30 Days', 'All Time'),
+      row('Views',            stats7Days?.views ?? 0,          '',                                    ''),
+      row('Saves',            stats7Days?.saves ?? 0,          '',                                    ''),
+      row('Directions',       stats7Days?.directions ?? 0,     stats30Days?.directions ?? 0,          ''),
+      row('Calls + Messages', stats7Days?.calls ?? 0,          stats30Days?.calls ?? 0,               ''),
+      row('Website',          stats7Days?.website ?? 0,        stats30Days?.website ?? 0,             ''),
+      row('Shares',           stats7Days?.shares ?? 0,         stats30Days?.shares ?? 0,              ''),
+      row('Intent Rate',      '',                              funnelData.intentRate.toFixed(2),      ''),
+      row('Total Reviews',    '',                              '',                                    reviewStats?.totalReviews ?? 0),
+      row('Average Rating',   '',                              '',                                    (reviewStats?.avgRating ?? 0).toFixed(2)),
+      row('New Reviews',      '',                              reviewStats?.newReviews30Days ?? 0,    ''),
+    ].join('\n');
   }, [funnelData, stats7Days, stats30Days, reviewStats]);
 
+  const buildAnalyticsShareText = useCallback(() => {
+    const dateStr = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    const intentPct = funnelData.intentRate.toFixed(1);
+    const rating = reviewStats?.avgRating ?? 0;
+
+    return `Farmstand Analytics Report
+${farmstandName}
+${dateStr}
+
+Last 7 Days
+Views: ${stats7Days?.views ?? 0}
+Saves: ${stats7Days?.saves ?? 0}
+Directions: ${stats7Days?.directions ?? 0}
+Calls + Messages: ${stats7Days?.calls ?? 0}
+Website: ${stats7Days?.website ?? 0}
+Shares: ${stats7Days?.shares ?? 0}
+
+Last 30 Days
+Directions: ${stats30Days?.directions ?? 0}
+Calls + Messages: ${stats30Days?.calls ?? 0}
+Website: ${stats30Days?.website ?? 0}
+Shares: ${stats30Days?.shares ?? 0}
+Intent Rate: ${intentPct}%
+
+Reviews & Ratings
+Average Rating: ${rating.toFixed(1)} out of 5
+Total Reviews: ${reviewStats?.totalReviews ?? 0}
+New Reviews: ${reviewStats?.newReviews30Days ?? 0}
+
+Generated by Farmstand
+farmstand.app`;
+  }, [farmstandName, funnelData, stats7Days, stats30Days, reviewStats]);
+
   const copyToClipboard = async (type: 'summary' | 'csv') => {
-    const content = type === 'summary' ? generateSummary() : generateCSV();
+    const content = type === 'summary' ? generateSummary() : buildAnalyticsCsv();
     await Clipboard.setStringAsync(content);
     setCopySuccess(type);
     setTimeout(() => setCopySuccess(null), 2000);
   };
 
   const shareReport = async () => {
-    const summary = generateSummary();
+    const summary = buildAnalyticsShareText();
     try {
       await Share.share({
         message: summary,

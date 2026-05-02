@@ -37,7 +37,7 @@ function MapFarmCardImage({ imageUri, style }: { imageUri?: string | null; style
   );
 }
 
-import { farmstandMatchesCategory, CATEGORY_LABELS } from '@/lib/category-filter';
+import { farmstandMatchesCategory, CATEGORY_LABELS, CATEGORY_FILTER_KEYWORDS } from '@/lib/category-filter';
 import { SignInPromptModal } from '@/components/SignInPromptModal';
 import { MapFilterModal } from '@/components/MapFilterModal';
 import { AddFarmstandBanner, shouldShowAddFarmstandBanner } from '@/components/AddFarmstandBanner';
@@ -73,6 +73,36 @@ const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: numbe
 };
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+// ── Search keyword expansion map (module-level so it can be reused by the price filter) ──
+const SEARCH_EXPANSIONS: Record<string, string[]> = {
+  'baked goods': ['baked', 'bakery', 'bread', 'sourdough', 'cookies', 'brownies', 'pastries', 'pastry', 'pie', 'pies', 'cake', 'cakes', 'muffins', 'scones', 'donuts', 'cinnamon rolls', 'croissant'],
+  'sourdough': ['sourdough', 'bread', 'baked', 'bakery'],
+  'fresh eggs': ['eggs', 'egg', 'farm fresh eggs', 'chicken eggs', 'duck eggs'],
+  'produce': ['produce', 'vegetables', 'veggies', 'tomatoes', 'greens', 'lettuce', 'peppers', 'corn', 'squash', 'zucchini', 'cucumber', 'carrots', 'onions', 'garlic', 'potatoes'],
+  'meat': ['meat', 'beef', 'pork', 'lamb', 'chicken', 'turkey', 'sausage', 'bacon', 'grass-fed', 'pasture-raised'],
+  'flowers': ['flowers', 'flower', 'bouquet', 'tulips', 'sunflowers', 'lavender', 'roses', 'dahlias', 'cut flowers'],
+  'honey': ['honey', 'bee', 'bees', 'honeycomb', 'raw honey', 'local honey'],
+  'u-pick': ['u-pick', 'upick', 'pick your own', 'pyo'],
+  'pumpkins': ['pumpkin', 'pumpkins', 'gourds', 'fall', 'autumn', 'halloween'],
+  'seasonal': ['seasonal', 'apple', 'apples', 'peach', 'peaches', 'cherry', 'cherries', 'pear', 'pears', 'berries', 'strawberries', 'blueberries'],
+  'dairy': ['dairy', 'milk', 'cheese', 'yogurt', 'butter', 'cream'],
+};
+
+/**
+ * Compute the effective search keywords and logic mode for a raw query string.
+ * Mirrors the logic inside searchFilteredFarms so both use identical keyword expansion.
+ */
+function computeSearchContext(query: string): { keywords: string[]; useOrLogic: boolean } {
+  const q = query.toLowerCase().trim();
+  if (!q) return { keywords: [], useOrLogic: false };
+  for (const [category, keywords] of Object.entries(SEARCH_EXPANSIONS)) {
+    if (q === category || q.includes(category) || category.includes(q)) {
+      return { keywords, useOrLogic: true };
+    }
+  }
+  return { keywords: q.split(/\s+/).filter((w) => w.length > 0), useOrLogic: false };
+}
 
 // ── Relevance sort helper — promotion-weighted daily rotation ───────────────
 // Extracted so both sortedViewportFarms and mapResults use identical logic.
@@ -418,13 +448,16 @@ export default function MapScreen() {
   const loadAllReviewStats = useReviewsStore((s) => s.loadAllReviewStats);
   const allProducts = useProductsStore((s) => s.products);
 
-  // Price filter: IDs fetched directly from Supabase using price_cents
-  // null = no price filter active; [] = filter active but no matches
-  const [priceFilteredIds, setPriceFilteredIds] = useState<string[] | null>(null);
+  // Price filter: products fetched from Supabase matching the price range.
+  // Includes product title so the filter can be scoped to the current search/category context.
+  // null = no price filter active; [] = filter active but no products match
+  const [priceMatchedProducts, setPriceMatchedProducts] = useState<
+    Array<{ farmstand_id: string; title: string }> | null
+  >(null);
 
   useEffect(() => {
     if (filterMinPrice === null && filterMaxPrice === null) {
-      setPriceFilteredIds(null);
+      setPriceMatchedProducts(null);
       return;
     }
 
@@ -437,7 +470,7 @@ export default function MapScreen() {
 
     let query = supabase
       .from('farmstand_products')
-      .select('farmstand_id')
+      .select('farmstand_id, title')
       .eq('in_stock', true);
 
     if (minCents !== null) query = query.gte('price_cents', minCents);
@@ -446,14 +479,17 @@ export default function MapScreen() {
     query.then(({ data, error }) => {
       if (error) {
         if (__DEV__) console.warn('[PriceFilter] Supabase error:', error.message);
-        setPriceFilteredIds([]);
+        setPriceMatchedProducts([]);
         return;
       }
-      const ids = [...new Set((data ?? []).map((r) => (r as { farmstand_id: string }).farmstand_id))];
+      const products = (data ?? []).map((r) => ({
+        farmstand_id: (r as { farmstand_id: string; title: string }).farmstand_id,
+        title: ((r as { farmstand_id: string; title: string }).title ?? '').toLowerCase().trim(),
+      }));
       if (__DEV__) {
-        console.log('[PriceFilter] matched farmstand_ids from farmstand_products:', ids);
+        console.log('[PriceFilter] products in range:', products.length, '| unique farms:', new Set(products.map((p) => p.farmstand_id)).size);
       }
-      setPriceFilteredIds(ids);
+      setPriceMatchedProducts(products);
     });
   }, [filterMinPrice, filterMaxPrice]);
 
@@ -1000,40 +1036,8 @@ export default function MapScreen() {
     // PRIORITY 4: Fall back to local search
     const query = activeSearchQuery.toLowerCase().trim();
 
-    // Define search term expansions for category searches
-    // When user searches for these terms, we expand to include related keywords
-    const searchExpansions: { [key: string]: string[] } = {
-      'baked goods': ['baked', 'bakery', 'bread', 'sourdough', 'cookies', 'brownies', 'pastries', 'pastry', 'pie', 'pies', 'cake', 'cakes', 'muffins', 'scones', 'donuts', 'cinnamon rolls', 'croissant'],
-      'sourdough': ['sourdough', 'bread', 'baked', 'bakery'],
-      'fresh eggs': ['eggs', 'egg', 'farm fresh eggs', 'chicken eggs', 'duck eggs'],
-      'produce': ['produce', 'vegetables', 'veggies', 'tomatoes', 'greens', 'lettuce', 'peppers', 'corn', 'squash', 'zucchini', 'cucumber', 'carrots', 'onions', 'garlic', 'potatoes'],
-      'meat': ['meat', 'beef', 'pork', 'lamb', 'chicken', 'turkey', 'sausage', 'bacon', 'grass-fed', 'pasture-raised'],
-      'flowers': ['flowers', 'flower', 'bouquet', 'tulips', 'sunflowers', 'lavender', 'roses', 'dahlias', 'cut flowers'],
-      'honey': ['honey', 'bee', 'bees', 'honeycomb', 'raw honey', 'local honey'],
-      'u-pick': ['u-pick', 'upick', 'pick your own', 'pyo'],
-      'pumpkins': ['pumpkin', 'pumpkins', 'gourds', 'fall', 'autumn', 'halloween'],
-      'seasonal': ['seasonal', 'apple', 'apples', 'peach', 'peaches', 'cherry', 'cherries', 'pear', 'pears', 'berries', 'strawberries', 'blueberries'],
-      'dairy': ['dairy', 'milk', 'cheese', 'yogurt', 'butter', 'cream'],
-    };
-
-    // Check if this is a category search that should use expanded keywords
-    let searchKeywords: string[] = [];
-    let useOrLogic = false;
-
-    // Check for exact or partial category match
-    for (const [category, keywords] of Object.entries(searchExpansions)) {
-      if (query === category || query.includes(category) || category.includes(query)) {
-        searchKeywords = keywords;
-        useOrLogic = true;
-        break;
-      }
-    }
-
-    // If no category match, use the original query words
-    if (searchKeywords.length === 0) {
-      searchKeywords = query.split(/\s+/).filter((word: string) => word.length > 0);
-      useOrLogic = false; // Regular searches use AND logic
-    }
+    // Compute search keywords using shared module-level SEARCH_EXPANSIONS
+    const { keywords: searchKeywords, useOrLogic } = computeSearchContext(query);
 
     return baseFarmstands.filter((farm) => {
       const searchableText = [
@@ -1100,12 +1104,63 @@ export default function MapScreen() {
       if (__DEV__) console.log('[RatingFilter] minRating:', filterMinRating, '| passed:', farms.length, '/', before);
     }
 
-    // Price range — filter using farmstand_ids matched by Supabase price_cents query
-    if (priceFilteredIds !== null) {
-      const idSet = new Set(priceFilteredIds);
-      farms = farms.filter((f) => idSet.has(f.id));
+    // Price range — context-aware: only count products matching the current search/category context.
+    // priceMatchedProducts contains (farmstand_id, title) for every in-stock product in the
+    // selected price range. We then narrow to products whose title also matches the active
+    // search keywords or category, so "$2–$5 + eggs search" only includes farmstands
+    // that have an egg product priced $2–$5, not any $2–$5 product.
+    if (priceMatchedProducts !== null) {
+      // Compute search keyword context (mirrors searchFilteredFarms logic)
+      const searchCtx = computeSearchContext(activeSearchQuery);
+
+      // Category keywords from mapFilter (Explore tab navigation) and filterCategories (chips)
+      const mapCatKeywords: string[] = mapFilter?.productTag
+        ? (CATEGORY_FILTER_KEYWORDS[mapFilter.productTag.toLowerCase()] ?? [mapFilter.productTag.toLowerCase()])
+        : [];
+      const chipCatKeywords: string[] = filterCategories.flatMap(
+        (cat) => CATEGORY_FILTER_KEYWORDS[cat.toLowerCase()] ?? [cat.toLowerCase()]
+      );
+      const allCatKeywords = [...mapCatKeywords, ...chipCatKeywords];
+
+      const hasSearchCtx = searchCtx.keywords.length > 0;
+      const hasCatCtx = allCatKeywords.length > 0;
+
+      if (!hasSearchCtx && !hasCatCtx) {
+        // No context active — any in-range product qualifies, simple ID set check
+        const idSet = new Set(priceMatchedProducts.map((p) => p.farmstand_id));
+        farms = farms.filter((f) => idSet.has(f.id));
+      } else {
+        // Context-aware — build a per-farm map of in-range product titles
+        const productsByFarm = new Map<string, string[]>();
+        for (const p of priceMatchedProducts) {
+          const existing = productsByFarm.get(p.farmstand_id);
+          if (existing) existing.push(p.title);
+          else productsByFarm.set(p.farmstand_id, [p.title]);
+        }
+
+        farms = farms.filter((farm) => {
+          const titles = productsByFarm.get(farm.id);
+          if (!titles || titles.length === 0) return false;
+
+          return titles.some((title) => {
+            // Must match search keywords when search is active
+            if (hasSearchCtx) {
+              const match = searchCtx.useOrLogic
+                ? searchCtx.keywords.some((kw) => title.includes(kw))
+                : searchCtx.keywords.every((kw) => title.includes(kw));
+              if (!match) return false;
+            }
+            // Must match category keywords when a category is active
+            if (hasCatCtx) {
+              if (!allCatKeywords.some((kw) => title.includes(kw))) return false;
+            }
+            return true;
+          });
+        });
+      }
+
       if (__DEV__) {
-        console.log('[PriceFilter] final farmstand_ids on map:', farms.map((f) => f.id));
+        console.log('[PriceFilter] context-aware result:', farms.length, 'farms | searchCtx:', searchCtx.keywords, '| catKw:', allCatKeywords);
       }
     }
 
@@ -1165,7 +1220,7 @@ export default function MapScreen() {
 
     if (__DEV__) console.log('[FilterPipeline] advancedFilteredFarms:', farms.length, '| filterMinRating:', filterMinRating ?? 'off', '| first5:', farms.slice(0, 5).map((f) => f.id));
     return farms;
-  }, [mapFilteredFarms, filterMinRating, filterRadiusMiles, priceFilteredIds, filterOpenNow, filterInStockOnly, filterCategories, filterSavedOnly, favorites, anchorLocation]);
+  }, [mapFilteredFarms, filterMinRating, filterRadiusMiles, priceMatchedProducts, activeSearchQuery, mapFilter, filterOpenNow, filterInStockOnly, filterCategories, filterSavedOnly, favorites, anchorLocation]);
 
   // Load all review stats when rating filter OR Best Rated sort is active
   useEffect(() => {

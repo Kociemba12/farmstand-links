@@ -10,8 +10,9 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
-import { Plus, ShoppingCart, Edit3, Trash2, X, Check, Package } from 'lucide-react-native';
+import { Plus, ShoppingCart, Edit3, Trash2, X, Check, Package, Calendar } from 'lucide-react-native';
 import type { Sale, PaymentMethod, DateRange, InventoryItem } from '@/lib/manager-types';
 import type { SaleInsert } from '@/lib/manager-types';
 import {
@@ -42,6 +43,7 @@ const PAYMENT_OPTIONS: PaymentOption[] = [
   { value: 'venmo', label: 'Venmo' },
   { value: 'paypal', label: 'PayPal' },
   { value: 'zelle', label: 'Zelle' },
+  { value: 'cash_app', label: 'Cash App' },
   { value: 'other', label: 'Other' },
 ];
 
@@ -161,9 +163,20 @@ function paymentBadgeStyle(method: PaymentMethod): { bg: string; color: string }
     case 'cash': return { bg: '#F0FDF4', color: '#16a34a' };
     case 'card': return { bg: '#EFF6FF', color: '#2563EB' };
     case 'venmo': return { bg: '#F3F4FF', color: '#4F46E5' };
+    case 'cash_app': return { bg: '#E6FAF0', color: '#00875A' };
     default: return { bg: '#F5F1EC', color: '#7A6F65' };
   }
 }
+
+const PAYMENT_LABEL: Record<PaymentMethod, string> = {
+  cash: 'Cash',
+  card: 'Card',
+  venmo: 'Venmo',
+  paypal: 'PayPal',
+  zelle: 'Zelle',
+  cash_app: 'Cash App',
+  other: 'Other',
+};
 
 interface ToastState {
   visible: boolean;
@@ -171,12 +184,19 @@ interface ToastState {
   success: boolean;
 }
 
+const isToday = (date: Date): boolean => {
+  const t = new Date();
+  return date.getDate() === t.getDate() && date.getMonth() === t.getMonth() && date.getFullYear() === t.getFullYear();
+};
+
 export function SalesTab({ farmstandId, dateRange, onSaleAdded, onSaleChanged }: SalesTabProps) {
   const [sales, setSales] = useState<Sale[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [modalVisible, setModalVisible] = useState<boolean>(false);
   const [editingSale, setEditingSale] = useState<Sale | null>(null);
   const [form, setForm] = useState<SaleFormState>(emptySaleForm);
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [showDatePicker, setShowDatePicker] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
   const [toast, setToast] = useState<ToastState>({ visible: false, message: '', success: true });
@@ -201,6 +221,8 @@ export function SalesTab({ farmstandId, dateRange, onSaleAdded, onSaleChanged }:
   const openAdd = useCallback(async () => {
     setEditingSale(null);
     setForm(emptySaleForm);
+    setSelectedDate(new Date());
+    setShowDatePicker(false);
     setModalVisible(true);
     const inv = await fetchInventory(farmstandId);
     setInventoryItems(inv);
@@ -221,6 +243,8 @@ export function SalesTab({ farmstandId, dateRange, onSaleAdded, onSaleChanged }:
       deduct_from_inventory: false,
       selected_inventory_id: sale.inventory_item_id ?? '',
     });
+    setSelectedDate(new Date(sale.sold_at));
+    setShowDatePicker(false);
     setModalVisible(true);
     const inv = await fetchInventory(farmstandId);
     setInventoryItems(inv);
@@ -230,6 +254,8 @@ export function SalesTab({ farmstandId, dateRange, onSaleAdded, onSaleChanged }:
     setModalVisible(false);
     setEditingSale(null);
     setForm(emptySaleForm);
+    setSelectedDate(new Date());
+    setShowDatePicker(false);
   }, []);
 
   const updateForm = useCallback(<K extends keyof SaleFormState>(field: K, value: SaleFormState[K]) => {
@@ -299,6 +325,7 @@ export function SalesTab({ farmstandId, dateRange, onSaleAdded, onSaleChanged }:
           unit_price: form.unit_price ? parseFloat(form.unit_price) : null,
           total_amount: total,
           payment_method: form.payment_method,
+          sold_at: selectedDate.toISOString(),
           notes: form.notes.trim() || null,
         });
         if (ok) {
@@ -322,7 +349,7 @@ export function SalesTab({ farmstandId, dateRange, onSaleAdded, onSaleChanged }:
           unit_price: form.unit_price ? parseFloat(form.unit_price) : null,
           total_amount: total,
           payment_method: form.payment_method,
-          sold_at: new Date().toISOString(),
+          sold_at: selectedDate.toISOString(),
           notes: form.notes.trim() || null,
         };
         const result = await createSale(saleInsert);
@@ -499,8 +526,8 @@ export function SalesTab({ farmstandId, dateRange, onSaleAdded, onSaleChanged }:
                       className="rounded-full px-2 py-0.5"
                       style={{ backgroundColor: badge.bg }}
                     >
-                      <Text className="text-xs font-semibold capitalize" style={{ color: badge.color }}>
-                        {sale.payment_method}
+                      <Text className="text-xs font-semibold" style={{ color: badge.color }}>
+                        {PAYMENT_LABEL[sale.payment_method] ?? sale.payment_method}
                       </Text>
                     </View>
                     <Text className="text-xs" style={{ color: '#A0A0A0' }}>
@@ -763,19 +790,37 @@ export function SalesTab({ farmstandId, dateRange, onSaleAdded, onSaleChanged }:
             </View>
 
             {/* Date row */}
-            <View
-              style={{
-                flexDirection: 'row', alignItems: 'center', gap: 8,
-                backgroundColor: '#F1EEE8',
-                borderRadius: 12,
-                paddingVertical: 10, paddingHorizontal: 12,
-                borderWidth: 1, borderColor: '#E0DBD2',
-              }}
-            >
-              <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#8A7E74' }} />
-              <Text style={{ fontSize: 14, fontWeight: '500', color: '#6A5E54' }}>
-                Date: Today ({new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })})
-              </Text>
+            <View>
+              <Pressable
+                onPress={() => setShowDatePicker((v) => !v)}
+                style={{
+                  flexDirection: 'row', alignItems: 'center', gap: 8,
+                  backgroundColor: showDatePicker ? '#E8F0E9' : '#F1EEE8',
+                  borderRadius: 12,
+                  paddingVertical: 10, paddingHorizontal: 12,
+                  borderWidth: 1, borderColor: showDatePicker ? '#2F5D3A' : '#E0DBD2',
+                }}
+              >
+                <Calendar size={14} color="#8A7E74" />
+                <Text style={{ fontSize: 14, fontWeight: '500', color: '#6A5E54', flex: 1 }}>
+                  {isToday(selectedDate)
+                    ? `Today · ${selectedDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`
+                    : selectedDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
+                </Text>
+                <Text style={{ fontSize: 12, fontWeight: '600', color: '#2F5D3A' }}>
+                  {showDatePicker ? 'Done' : 'Change'}
+                </Text>
+              </Pressable>
+              {showDatePicker && (
+                <DateTimePicker
+                  value={selectedDate}
+                  mode="date"
+                  display="spinner"
+                  maximumDate={new Date()}
+                  onChange={(_: DateTimePickerEvent, date?: Date) => { if (date) setSelectedDate(date); }}
+                  style={{ backgroundColor: '#FFFFFF', borderRadius: 12, marginTop: 4 }}
+                />
+              )}
             </View>
 
             {/* Notes */}
