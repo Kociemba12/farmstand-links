@@ -594,7 +594,7 @@ export default function ProfileScreen() {
       ' farmstands=' + ownedFarmstands.length
     );
 
-    checkForPendingPremiumOnboarding(userId, ownedFarmstands).then((pendingId) => {
+    checkForPendingPremiumOnboarding(userId, ownedFarmstands, { isAdmin }).then((pendingId) => {
       if (pendingId) {
         // Use the session-level guard so only one code path fires navigation
         const canPresent = usePremiumOnboardingStore.getState().tryMarkPresented();

@@ -191,11 +191,20 @@ export async function markClaimApprovedModalAsSeen(userId: string): Promise<void
  */
 export async function checkForPendingPremiumOnboarding(
   userId: string,
-  farmstands: Array<{ id: string; claimStatus: string; premiumStatus: string; ownerUserId?: string }>
+  farmstands: Array<{ id: string; claimStatus: string; premiumStatus: string; ownerUserId?: string }>,
+  opts?: { isAdmin?: boolean }
 ): Promise<string | null> {
   console.log(
-    `[PremiumOnboarding] checkForPending: userId=${userId}, farmstands=${farmstands.length}`
+    `[PremiumOnboarding] checkForPending: userId=${userId}, farmstands=${farmstands.length}, isAdmin=${opts?.isAdmin ?? false}`
   );
+
+  // Admin users must never see the auto-triggered premium onboarding modal.
+  // They approve claims on behalf of others and must not be treated as owners.
+  if (opts?.isAdmin) {
+    if (__DEV__) console.log('[PremiumOnboarding] skipped: admin user');
+    usePremiumOnboardingStore.getState().setPendingFarmstandId(null);
+    return null;
+  }
 
   // Only evaluate farmstands explicitly owned by the current user.
   // Farmstands missing ownerUserId are excluded — we cannot verify ownership.
@@ -204,7 +213,7 @@ export async function checkForPendingPremiumOnboarding(
   );
 
   if (ownedByUser.length === 0) {
-    console.log(`[PremiumOnboarding] No farmstands owned by userId=${userId} — skipping`);
+    if (__DEV__) console.log('[PremiumOnboarding] skipped: no owned farmstands');
     usePremiumOnboardingStore.getState().setPendingFarmstandId(null);
     return null;
   }
@@ -229,9 +238,7 @@ export async function checkForPendingPremiumOnboarding(
 
     const seen = await hasPremiumOnboardingBeenSeen(userId, farmstand.id);
     if (!seen) {
-      console.log(
-        `[PremiumOnboarding] TRIGGER: farmstand ${farmstand.id} is claimed+free, needs upsell onboarding (not seen yet)`
-      );
+      if (__DEV__) console.log(`[PremiumOnboarding] opening for owned farmstand: ${farmstand.id}`);
       usePremiumOnboardingStore.getState().setPendingFarmstandId(farmstand.id);
       return farmstand.id;
     } else {

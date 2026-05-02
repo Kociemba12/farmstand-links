@@ -9,7 +9,7 @@ import { useColorScheme } from '@/lib/useColorScheme';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
-import { useUserStore } from '@/lib/user-store';
+import { useUserStore, isAdminEmail } from '@/lib/user-store';
 import { useReviewsStore } from '@/lib/reviews-store';
 import { useChatStore } from '@/lib/chat-store';
 import { useSupabaseAutoRefresh } from '@/lib/supabase';
@@ -129,7 +129,8 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
     );
 
     setHasCheckedThisSession(true);
-    checkForPendingPremiumOnboarding(userId, userFarmstands).then((pendingId) => {
+    const isAdmin = isAdminEmail((user as { email?: string } | null)?.email);
+    checkForPendingPremiumOnboarding(userId, userFarmstands, { isAdmin }).then((pendingId) => {
       if (pendingId) {
         // pendingFarmstandId is already set in the store by checkForPendingPremiumOnboarding.
         // The Explore screen will detect it and show the ClaimApprovedModal overlay —
