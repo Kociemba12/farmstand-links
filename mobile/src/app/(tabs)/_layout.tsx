@@ -5,8 +5,9 @@ import { Search, Map, Heart, User, MessageCircle } from 'lucide-react-native';
 import { View, Text, AppState, type AppStateStatus } from 'react-native';
 import { useChatStore } from '@/lib/chat-store';
 import { useAlertsStore } from '@/lib/alerts-store';
-import { useUserStore } from '@/lib/user-store';
+import { useUserStore, isAdminEmail } from '@/lib/user-store';
 import { useSupportUnreadStore } from '@/lib/support-unread-store';
+import { useAdminUnreadStore } from '@/lib/admin-unread-store';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -112,21 +113,68 @@ function useSupportUnreadInit() {
   }, []);
 }
 
+// ─── Admin unread boot hook ───────────────────────────────────────────────────
+// Fetches admin-unread support ticket count when the current user is an admin.
+
+function useAdminUnreadInit() {
+  const currentUser = useUserStore(s => s.user);
+  const fetchAdminUnreadCount = useAdminUnreadStore(s => s.fetchAdminUnreadCount);
+  const prevUserIdRef = useRef<string | null>(null);
+
+  const refresh = useRef(() => {
+    const user = useUserStore.getState().user;
+    if (!isAdminEmail(user?.email)) return;
+    fetchAdminUnreadCount();
+  });
+
+  useEffect(() => {
+    refresh.current = () => {
+      const user = useUserStore.getState().user;
+      if (!isAdminEmail(user?.email)) return;
+      fetchAdminUnreadCount();
+    };
+  }, [fetchAdminUnreadCount]);
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    if (!isAdminEmail(currentUser.email)) return;
+    if (currentUser.id === prevUserIdRef.current) return;
+    prevUserIdRef.current = currentUser.id;
+    if (__DEV__) console.log('[AdminUnreadBadge] admin user ready — fetching admin unread count');
+    fetchAdminUnreadCount();
+  }, [currentUser, fetchAdminUnreadCount]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next: AppStateStatus) => {
+      if (next === 'active') refresh.current();
+    });
+    return () => sub.remove();
+  }, []);
+}
+
 // Profile tab icon with support unread badge
 function ProfileTabIcon({ color, focused }: { color: string; focused: boolean }) {
-  const unreadCount = useSupportUnreadStore(s => s.unreadCount);
+  const user = useUserStore(s => s.user);
+  const userUnreadCount = useSupportUnreadStore(s => s.unreadCount);
+  const adminUnreadCount = useAdminUnreadStore(s => s.adminUnreadCount);
+
+  const isAdmin = isAdminEmail(user?.email);
+  const badgeCount = isAdmin ? adminUnreadCount : userUnreadCount;
+
+  if (__DEV__ && isAdmin) console.log('[ProfileTabBadge] admin=true | adminUnreadCount:', adminUnreadCount, '| showing badge:', badgeCount > 0);
+
   return (
     <View style={{ position: 'relative' }}>
       <View className={`p-1.5 rounded-xl ${focused ? 'bg-mint/30' : ''}`}>
         <User size={22} color={color} />
       </View>
-      {unreadCount > 0 && (
+      {badgeCount > 0 && (
         <View
           className="absolute -top-1 -right-1 bg-red-500 rounded-full items-center justify-center"
           style={{ minWidth: 18, height: 18, paddingHorizontal: 4 }}
         >
           <Text className="text-white text-[10px] font-bold">
-            {unreadCount > 9 ? '9+' : unreadCount}
+            {badgeCount > 9 ? '9+' : badgeCount}
           </Text>
         </View>
       )}
@@ -165,6 +213,7 @@ function InboxTabIcon({ color, focused }: { color: string; focused: boolean }) {
 export default function TabLayout() {
   useInboxBadgeInit();
   useSupportUnreadInit();
+  useAdminUnreadInit();
   return (
     <Tabs
       screenOptions={{

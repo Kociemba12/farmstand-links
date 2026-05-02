@@ -797,7 +797,12 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
+      <Stack
+        screenOptions={{
+          headerBackTitle: '',
+          headerBackButtonDisplayMode: 'minimal',
+        }}
+      >
         <Stack.Screen name="auth/login" options={{ headerShown: false }} />
         <Stack.Screen name="auth/signup" options={{ headerShown: false, presentation: 'transparentModal', animation: 'none' }} />
         <Stack.Screen name="auth/confirm-email" options={{ headerShown: false }} />
@@ -810,18 +815,13 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
         <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
         <Stack.Screen name="profile/notifications" options={{ headerShown: false }} />
         <Stack.Screen name="profile/location" options={{ headerShown: false }} />
-        <Stack.Screen name="profile/rate-us" options={{ headerShown: false }} />
-        <Stack.Screen name="profile/help" options={{ headerShown: false }} />
-        <Stack.Screen name="profile/settings" options={{ headerShown: false }} />
-        <Stack.Screen name="profile/notification-settings" options={{ headerShown: false }} />
+        <Stack.Screen name="profile/rate-us" options={{ headerShown: true }} />
+        <Stack.Screen name="profile/help" options={{ headerShown: true }} />
+        <Stack.Screen name="profile/settings" options={{ headerShown: true }} />
         <Stack.Screen name="profile/visited" options={{ headerShown: false }} />
         <Stack.Screen name="profile/reviews" options={{ headerShown: false }} />
-        <Stack.Screen name="profile/edit-profile" options={{ headerShown: false }} />
-        <Stack.Screen name="profile/change-password" options={{ headerShown: false }} />
         <Stack.Screen name="profile/paywall" options={{ headerShown: false, presentation: 'modal' }} />
-        <Stack.Screen name="profile/privacy-policy" options={{ headerShown: false }} />
-        <Stack.Screen name="profile/terms" options={{ headerShown: false }} />
-        <Stack.Screen name="profile/support" options={{ headerShown: false }} />
+        <Stack.Screen name="profile/support" options={{ headerShown: true }} />
         <Stack.Screen name="profile/support-thread" options={{ headerShown: false }} />
         <Stack.Screen name="farmer/onboarding" options={{ headerShown: false, presentation: 'modal' }} />
         <Stack.Screen name="farmer/dashboard" options={{ headerShown: false }} />

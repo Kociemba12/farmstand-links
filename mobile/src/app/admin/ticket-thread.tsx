@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -32,6 +33,7 @@ import {
   TicketStatus,
 } from '@/lib/admin-store';
 import { useUserStore } from '@/lib/user-store';
+import { supabase } from '@/lib/supabase';
 import * as Haptics from 'expo-haptics';
 
 function getStatusColor(status: TicketStatus): string {
@@ -165,6 +167,9 @@ function TicketThreadContent() {
   );
   const [editText, setEditText] = useState('');
   const [showEditModal, setShowEditModal] = useState(false);
+  // Local status override so UI updates immediately after resolve/reopen
+  // without waiting for a full store reload.
+  const [localStatus, setLocalStatus] = useState<TicketStatus | null>(null);
 
   const loadAdminData = useAdminStore((s) => s.loadAdminData);
   const getTicketById = useAdminStore((s) => s.getTicketById);
@@ -175,6 +180,7 @@ function TicketThreadContent() {
   const reopenTicket = useAdminStore((s) => s.reopenTicket);
   const editAdminMessage = useAdminStore((s) => s.editAdminMessage);
   const createSupportTicket = useAdminStore((s) => s.createSupportTicket);
+  const markSupportTicketResolvedLocal = useAdminStore((s) => s.markSupportTicketResolvedLocal);
   const reportsAndFlags = useAdminStore((s) => s.reportsAndFlags);
   const user = useUserStore((s) => s.user);
   const insets = useSafeAreaInsets();
@@ -245,14 +251,49 @@ function TicketThreadContent() {
   };
 
   const handleResolve = async () => {
-    if (!ticket || !user) return;
+    if (!ticket) return;
+
+    console.log('[Resolve Ticket] ticket ids:', {
+      id: ticket?.id,
+      ticketId: ticket?.ticketId,
+      feedbackId: ticket?.feedbackId,
+    });
+
+    const ticketId = ticket?.feedbackId ?? ticket?.id ?? ticket?.ticketId;
+
+    if (!ticketId || ticketId.startsWith('ticket-')) {
+      console.warn('[Resolve Ticket] Missing real feedback id', {
+        id: ticket?.id,
+        ticketId: ticket?.ticketId,
+        feedbackId: ticket?.feedbackId,
+      });
+      Alert.alert(
+        'Error',
+        'This ticket is missing its real database ID. Please refresh tickets and try again.'
+      );
+      return;
+    }
 
     setIsLoading(true);
     try {
-      await resolveTicket(ticket.ticketId, user.id ?? '');
+      const { data, error } = await supabase.rpc('mark_ticket_resolved', {
+        p_ticket_id: ticketId,
+      });
+
+      console.log('[Resolve Ticket] RPC result:', { data, error });
+
+      if (error) {
+        Alert.alert('Error', error?.message ?? 'Failed to mark ticket as resolved.');
+        return;
+      }
+
+      setLocalStatus('resolved');
+      markSupportTicketResolvedLocal(ticketId);
+      if (__DEV__) console.log('[Resolve Ticket] resolved locally:', ticketId);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (error) {
-      console.error('Error resolving ticket:', error);
+    } catch (err) {
+      console.error('[Resolve Ticket] Error:', err);
+      Alert.alert('Error', err instanceof Error ? err.message : 'Failed to mark ticket as resolved.');
     } finally {
       setIsLoading(false);
     }
@@ -294,6 +335,10 @@ function TicketThreadContent() {
       setIsLoading(false);
     }
   };
+
+  // localStatus takes precedence; falls back to store value.
+  // Resolves to 'open' if ticket has no status yet (defensive).
+  const effectiveStatus: TicketStatus = localStatus ?? ticket?.status ?? 'open';
 
   // If no ticket exists but we have a report, show create ticket option
   if (!ticket && report) {
@@ -355,7 +400,7 @@ function TicketThreadContent() {
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       style={{ flex: 1 }}
-      keyboardVerticalOffset={0}
+      keyboardVerticalOffset={insets.top}
     >
       <View className="flex-1 bg-gray-50">
         <SafeAreaView edges={['top']} className="bg-white">
@@ -370,13 +415,13 @@ function TicketThreadContent() {
               <View className="flex-row items-center mt-0.5">
                 <View
                   className="px-2 py-0.5 rounded-full"
-                  style={{ backgroundColor: getStatusColor(ticket.status) + '20' }}
+                  style={{ backgroundColor: getStatusColor(effectiveStatus) + '20' }}
                 >
                   <Text
                     className="text-xs font-medium"
-                    style={{ color: getStatusColor(ticket.status) }}
+                    style={{ color: getStatusColor(effectiveStatus) }}
                   >
-                    {getStatusLabel(ticket.status)}
+                    {getStatusLabel(effectiveStatus)}
                   </Text>
                 </View>
               </View>
@@ -413,6 +458,8 @@ function TicketThreadContent() {
           ref={scrollViewRef}
           className="flex-1 px-4 py-4"
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ paddingBottom: 16 }}
           onContentSizeChange={() =>
             scrollViewRef.current?.scrollToEnd({ animated: false })
           }
@@ -437,7 +484,7 @@ function TicketThreadContent() {
           paddingBottom: Math.max(insets.bottom, 12) + 4,
         }}>
           <View className="flex-row gap-2 mb-3">
-            {ticket.status !== 'resolved' ? (
+            {effectiveStatus !== 'resolved' ? (
               <Pressable
                 onPress={handleResolve}
                 disabled={isLoading}

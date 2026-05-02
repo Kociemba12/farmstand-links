@@ -21,10 +21,10 @@ import { AdminGuard } from '@/components/AdminGuard';
 import { useAdminStore } from '@/lib/admin-store';
 import { useUserStore } from '@/lib/user-store';
 import { usePromotionsStore } from '@/lib/promotions-store';
+import { useAdminUnreadStore } from '@/lib/admin-unread-store';
 import { getValidSession, supabase } from '@/lib/supabase';
 import * as Haptics from 'expo-haptics';
 
-// Background color constant
 const BG_COLOR = '#FAF7F2';
 const BACKEND_URL = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
 
@@ -33,6 +33,7 @@ interface DashboardCardProps {
   description: string;
   icon: React.ReactNode;
   count?: number;
+  showRedDot?: boolean;
   onPress: () => void;
   iconBgColor: string;
   delay?: number;
@@ -43,6 +44,7 @@ function DashboardCard({
   description,
   icon,
   count,
+  showRedDot = false,
   onPress,
   iconBgColor,
   delay = 0,
@@ -64,11 +66,28 @@ function DashboardCard({
         }}
       >
         <View className="flex-row items-center">
-          <View
-            className="w-12 h-12 rounded-full items-center justify-center mr-4"
-            style={{ backgroundColor: iconBgColor }}
-          >
-            {icon}
+          <View style={{ position: 'relative', marginRight: 16 }}>
+            <View
+              className="w-12 h-12 rounded-full items-center justify-center"
+              style={{ backgroundColor: iconBgColor }}
+            >
+              {icon}
+            </View>
+            {showRedDot && (
+              <View
+                style={{
+                  position: 'absolute',
+                  top: -2,
+                  right: -2,
+                  width: 14,
+                  height: 14,
+                  borderRadius: 7,
+                  backgroundColor: '#EF4444',
+                  borderWidth: 2,
+                  borderColor: '#FFFFFF',
+                }}
+              />
+            )}
           </View>
           <View className="flex-1">
             <View className="flex-row items-center">
@@ -118,9 +137,11 @@ function AdminDashboardContent() {
   const pendingApprovals = useAdminStore((s) => s.analytics.pendingApprovals);
   const analyticsLoading = useAdminStore((s) => s.analytics.isLoading);
 
+  const adminUnreadCount = useAdminUnreadStore((s) => s.adminUnreadCount);
+  const fetchAdminUnreadCount = useAdminUnreadStore((s) => s.fetchAdminUnreadCount);
+
   const [refreshing, setRefreshing] = useState(false);
   const [claimRequestCount, setClaimRequestCount] = useState(0);
-  const [newFeedbackCount, setNewFeedbackCount] = useState(0);
 
   // Fetch awaiting-review ownership claim count via backend API (service role key, bypasses RLS)
   // Uses same endpoint as the Claim Requests screen so both show the same count
@@ -183,29 +204,6 @@ function AdminDashboardContent() {
     }
   }, []);
 
-  // Fetch unread feedback count from backend
-  const loadNewFeedbackCount = useCallback(async () => {
-    try {
-      const session = await getValidSession();
-      if (!session) return;
-      const resp = await fetch(`${BACKEND_URL}/api/feedback?status=new`, {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
-      if (!resp.ok) return;
-      const dct2 = resp.headers.get('content-type') ?? '';
-      if (!dct2.includes('application/json')) {
-        console.log('[Dashboard] loadNewFeedbackCount non-JSON response (HTTP', resp.status, '), content-type:', dct2);
-        return;
-      }
-      const json = await resp.json() as { success: boolean; data?: unknown[] };
-      if (json.success && Array.isArray(json.data)) {
-        setNewFeedbackCount(json.data.length);
-      }
-    } catch {
-      // non-critical — silently ignore
-    }
-  }, []);
-
   // Load analytics ONLY on focus (single lifecycle hook, not both useEffect and useFocusEffect)
   useFocusEffect(
     useCallback(() => {
@@ -214,15 +212,15 @@ function AdminDashboardContent() {
       loadAdminData();
       loadManagedUsers();
       loadClaimRequestCount();
-      loadNewFeedbackCount();
-    }, [loadAnalytics, loadAdminData, loadManagedUsers, loadClaimRequestCount, loadNewFeedbackCount])
+      fetchAdminUnreadCount();
+    }, [loadAnalytics, loadAdminData, loadManagedUsers, loadClaimRequestCount, fetchAdminUnreadCount])
   );
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([loadAnalytics(), loadAdminData(), loadManagedUsers(), loadClaimRequestCount(), loadNewFeedbackCount()]);
+    await Promise.all([loadAnalytics(), loadAdminData(), loadManagedUsers(), loadClaimRequestCount(), fetchAdminUnreadCount()]);
     setRefreshing(false);
-  }, [loadAnalytics, loadAdminData, loadManagedUsers, loadClaimRequestCount, loadNewFeedbackCount]);
+  }, [loadAnalytics, loadAdminData, loadManagedUsers, loadClaimRequestCount, fetchAdminUnreadCount]);
 
   // Use analytics for main counts (prevents flicker)
   const userCount = managedUsers.length;
@@ -385,8 +383,12 @@ function AdminDashboardContent() {
             title="Feedback & Support"
             description="View user feedback and help requests"
             icon={<MessageSquare size={24} color="#0891b2" />}
-            count={newFeedbackCount}
-            onPress={() => router.push('/admin/feedback')}
+            count={adminUnreadCount}
+            showRedDot={adminUnreadCount > 0}
+            onPress={() => {
+              if (__DEV__) console.log('[Dashboard] opening Feedback & Support — adminUnreadCount:', adminUnreadCount);
+              router.push('/admin/feedback');
+            }}
             iconBgColor="#CFFAFE"
             delay={525}
           />

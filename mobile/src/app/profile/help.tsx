@@ -1,8 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { View, Text, ScrollView, Pressable, Linking, Alert } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import {
-  ArrowLeft,
   ChevronRight,
   HelpCircle,
   MessageSquare,
@@ -13,7 +11,7 @@ import {
   Ticket,
   Send,
 } from 'lucide-react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, Stack } from 'expo-router';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { SupportTicket, TicketStatus, fetchSupportTickets } from '@/lib/support-api';
@@ -224,18 +222,19 @@ export default function HelpScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: '#FDF8F3' }}>
-      {/* Light header matching Saved/Inbox style */}
-      <SafeAreaView edges={['top']} style={{ backgroundColor: '#FDF8F3' }}>
-        <View style={{ paddingHorizontal: 20, paddingTop: 4, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: '#EDE8E0' }}>
-          <Pressable onPress={() => router.back()} style={{ marginBottom: 12, alignSelf: 'flex-start', padding: 2, marginLeft: -2 }}>
-            <ArrowLeft size={22} color="#4A7C59" />
-          </Pressable>
-          <Text style={{ fontSize: 26, fontWeight: '700', color: '#2C2420', letterSpacing: -0.3 }}>Support</Text>
-          <Text style={{ fontSize: 14, color: '#A8906E', marginTop: 2 }}>
-            Get help or send us a message
-          </Text>
-        </View>
-      </SafeAreaView>
+      <Stack.Screen
+        options={{
+          title: 'Support',
+          headerShown: true,
+          headerTitleAlign: 'center',
+          headerTitleStyle: { fontSize: 20, fontWeight: '600' },
+          headerStyle: { backgroundColor: '#FDF8F3' },
+          headerBackTitle: '',
+          headerBackButtonDisplayMode: 'minimal',
+          headerTintColor: '#2f6b46',
+          headerBackVisible: true,
+        }}
+      />
 
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
         <View style={{ paddingHorizontal: 20, paddingTop: 24, paddingBottom: 48 }}>

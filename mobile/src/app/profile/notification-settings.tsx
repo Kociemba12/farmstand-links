@@ -3,20 +3,17 @@ import {
   View,
   Text,
   ScrollView,
-  Pressable,
   Switch,
   StyleSheet,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import {
-  ArrowLeft,
   MessageSquare,
   Bookmark,
   ShieldAlert,
   Megaphone,
 } from 'lucide-react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { Stack, useFocusEffect } from 'expo-router';
 import { useUserStore } from '@/lib/user-store';
 import { supabase } from '@/lib/supabase';
 import * as Haptics from 'expo-haptics';
@@ -94,7 +91,6 @@ async function fetchRowFromDB(userId: string): Promise<NotificationPrefs | null>
 }
 
 export default function NotificationSettingsScreen() {
-  const router = useRouter();
   const user = useUserStore((s) => s.user);
 
   const [isLoading, setIsLoading] = useState(true);
@@ -237,50 +233,34 @@ export default function NotificationSettingsScreen() {
     }
   };
 
-  // — Guest / signed-out state —
-  if (!user || !user.id || user.id === 'guest') {
-    return (
-      <View style={styles.page}>
-        <SafeAreaView edges={['top']} style={styles.header}>
-          <View style={styles.headerContent}>
-            <Pressable onPress={() => router.back()} style={styles.backButton}>
-              <ArrowLeft size={22} color="#4A7C59" />
-            </Pressable>
-            <Text style={styles.headerTitle}>Notifications</Text>
-          </View>
-        </SafeAreaView>
+  const isGuest = !user || !user.id || user.id === 'guest';
 
+  return (
+    <View style={styles.page}>
+      <Stack.Screen
+        options={{
+          title: 'Notifications',
+          headerShown: true,
+          headerTitleAlign: 'center',
+          headerTitleStyle: { fontSize: 20, fontWeight: '600' },
+          headerStyle: { backgroundColor: '#FDF8F3' },
+          headerBackTitle: '',
+          headerBackButtonDisplayMode: 'minimal',
+          headerTintColor: '#2f6b46',
+          headerBackVisible: true,
+          headerRight: isSaving
+            ? () => <ActivityIndicator size="small" color="#4A7C59" style={{ marginRight: 4 }} />
+            : undefined,
+        }}
+      />
+
+      {isGuest ? (
         <View style={styles.centeredState}>
           <Text style={styles.guestText}>
             Please sign in to manage your notification settings.
           </Text>
         </View>
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.page}>
-      {/* Header */}
-      <SafeAreaView edges={['top']} style={styles.header}>
-        <View style={styles.headerContent}>
-          <Pressable onPress={() => router.back()} style={styles.backButton}>
-            <ArrowLeft size={22} color="#4A7C59" />
-          </Pressable>
-          <View style={styles.titleRow}>
-            <Text style={styles.headerTitle}>Notifications</Text>
-            {isSaving && (
-              <ActivityIndicator
-                size="small"
-                color="#4A7C59"
-                style={styles.savingIndicator}
-              />
-            )}
-          </View>
-        </View>
-      </SafeAreaView>
-
-      {isLoading ? (
+      ) : isLoading ? (
         <View style={styles.centeredState}>
           <ActivityIndicator size="large" color="#4A7C59" />
           <Text style={styles.loadingText}>Loading settings…</Text>
@@ -346,37 +326,6 @@ const styles = StyleSheet.create({
   page: {
     flex: 1,
     backgroundColor: '#FDF8F3',
-  },
-
-  // Header — matches refreshed settings screens (light, not dark green)
-  header: {
-    backgroundColor: '#FDF8F3',
-    borderBottomWidth: 1,
-    borderBottomColor: '#EDE8E0',
-  },
-  headerContent: {
-    paddingHorizontal: 20,
-    paddingTop: 4,
-    paddingBottom: 16,
-  },
-  backButton: {
-    alignSelf: 'flex-start',
-    padding: 2,
-    marginLeft: -2,
-    marginBottom: 12,
-  },
-  titleRow: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-  },
-  headerTitle: {
-    fontSize: 26,
-    fontWeight: '700' as const,
-    color: '#2C2420',
-    letterSpacing: -0.3,
-  },
-  savingIndicator: {
-    marginLeft: 10,
   },
 
   // Scroll area

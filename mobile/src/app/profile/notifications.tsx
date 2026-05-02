@@ -1,8 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { View, Text, ScrollView, Pressable, Switch, Image, Modal, Dimensions } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import {
-  ArrowLeft,
   Leaf,
   ShoppingBag,
   Heart,
@@ -13,7 +11,7 @@ import {
   Trash2,
   Bell,
 } from 'lucide-react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { Stack, useRouter, useFocusEffect } from 'expo-router';
 import Animated, {
   FadeIn,
   FadeInDown,
@@ -468,30 +466,33 @@ export default function NotificationsScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: '#FDF8F3' }}>
-      <SafeAreaView edges={['top']} style={{ backgroundColor: '#FDF8F3' }}>
-        <View style={{ paddingHorizontal: 20, paddingTop: 4, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: '#EDE8E0' }}>
-          <Pressable onPress={() => router.back()} style={{ marginBottom: 12, alignSelf: 'flex-start', padding: 2, marginLeft: -2 }}>
-            <ArrowLeft size={22} color="#4A7C59" />
-          </Pressable>
-          <Text style={{ fontSize: 26, fontWeight: '700', color: '#2C2420', letterSpacing: -0.3 }}>Notifications</Text>
-          <Text style={{ fontSize: 14, color: '#A8906E', marginTop: 2 }}>Manage your notification preferences</Text>
-        </View>
+      <Stack.Screen
+        options={{
+          headerShown: true,
+          title: 'Notifications',
+          headerTitleAlign: 'center',
+          headerTitleStyle: { fontSize: 20, fontWeight: '600' },
+          headerStyle: { backgroundColor: '#FDF8F3' },
+          headerTintColor: '#4A7C59',
+          headerBackTitle: '',
+          headerBackButtonDisplayMode: 'minimal',
+        }}
+      />
 
-        {/* Tabs */}
-        <View style={{ flexDirection: 'row', backgroundColor: '#FDF8F3', borderBottomWidth: 1, borderBottomColor: '#EDE8E0' }}>
-          <TabButton
-            label="Messages"
-            isActive={activeTab === 'messages'}
-            onPress={() => handleTabChange('messages')}
-            badge={totalUnread}
-          />
-          <TabButton
-            label="Alerts"
-            isActive={activeTab === 'alerts'}
-            onPress={() => handleTabChange('alerts')}
-          />
-        </View>
-      </SafeAreaView>
+      {/* Tabs */}
+      <View style={{ flexDirection: 'row', backgroundColor: '#FDF8F3', borderBottomWidth: 1, borderBottomColor: '#EDE8E0' }}>
+        <TabButton
+          label="Messages"
+          isActive={activeTab === 'messages'}
+          onPress={() => handleTabChange('messages')}
+          badge={totalUnread}
+        />
+        <TabButton
+          label="Alerts"
+          isActive={activeTab === 'alerts'}
+          onPress={() => handleTabChange('alerts')}
+        />
+      </View>
 
       {/* Content */}
       {activeTab === 'messages' ? (

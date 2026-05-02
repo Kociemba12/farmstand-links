@@ -7,9 +7,8 @@ import {
   TextInput,
   Alert,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft, Lock, Eye, EyeOff, Check, X } from 'lucide-react-native';
-import { useRouter } from 'expo-router';
+import { Lock, Eye, EyeOff, Check, X } from 'lucide-react-native';
+import { useRouter, Stack } from 'expo-router';
 import { settingsStyles, settingsColors } from '@/lib/settings-styles';
 import * as Haptics from 'expo-haptics';
 
@@ -83,15 +82,19 @@ export default function ChangePasswordScreen() {
 
   return (
     <View style={settingsStyles.pageContainer}>
-      {/* Header */}
-      <SafeAreaView edges={['top']} style={settingsStyles.header}>
-        <View style={settingsStyles.headerContent}>
-          <Pressable onPress={() => router.back()} style={settingsStyles.headerBackButton}>
-            <ArrowLeft size={22} color={settingsColors.headerText} />
-          </Pressable>
-          <Text style={settingsStyles.headerTitle}>Change Password</Text>
-        </View>
-      </SafeAreaView>
+      <Stack.Screen
+        options={{
+          title: 'Change Password',
+          headerShown: true,
+          headerTitleAlign: 'center',
+          headerTitleStyle: { fontSize: 20, fontWeight: '600' },
+          headerStyle: { backgroundColor: settingsColors.headerBackground },
+          headerBackTitle: '',
+          headerBackButtonDisplayMode: 'minimal',
+          headerTintColor: '#2f6b46',
+          headerBackVisible: true,
+        }}
+      />
 
       <ScrollView
         style={{ flex: 1 }}

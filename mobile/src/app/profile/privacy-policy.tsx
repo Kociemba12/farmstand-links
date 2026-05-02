@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, ScrollView, Pressable, Linking, Alert, useWindowDimensions } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft } from 'lucide-react-native';
-import { useRouter } from 'expo-router';
+import { Stack } from 'expo-router';
 import { settingsStyles, settingsColors } from '@/lib/settings-styles';
 
 const emailLinkStyle = { color: settingsColors.primary, textDecorationLine: 'underline' as const };
@@ -23,7 +21,6 @@ async function openMailto(email: string) {
 }
 
 export default function PrivacyPolicyScreen() {
-  const router = useRouter();
   const { width } = useWindowDimensions();
   const cardWidth = width - 40;
   const innerWidth = cardWidth - 32;
@@ -38,16 +35,19 @@ export default function PrivacyPolicyScreen() {
 
   return (
     <View style={settingsStyles.pageContainer}>
-      {/* Header */}
-      <SafeAreaView edges={['top']} style={settingsStyles.header}>
-        <View style={settingsStyles.headerContent}>
-          <Pressable onPress={() => router.back()} style={settingsStyles.headerBackButton}>
-            <ArrowLeft size={22} color={settingsColors.headerText} />
-          </Pressable>
-          <Text style={settingsStyles.headerTitle}>Privacy Policy</Text>
-          <View style={settingsStyles.headerRightButton} />
-        </View>
-      </SafeAreaView>
+      <Stack.Screen
+        options={{
+          title: 'Privacy Policy',
+          headerShown: true,
+          headerTitleAlign: 'center',
+          headerTitleStyle: { fontSize: 20, fontWeight: '600' },
+          headerStyle: { backgroundColor: settingsColors.headerBackground },
+          headerBackTitle: '',
+          headerBackButtonDisplayMode: 'minimal',
+          headerTintColor: '#2f6b46',
+          headerBackVisible: true,
+        }}
+      />
 
       <ScrollView
         style={{ flex: 1 }}

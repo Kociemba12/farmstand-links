@@ -288,6 +288,8 @@ export type SenderRole = 'farmer' | 'admin';
 export interface SupportTicket {
   ticketId: string;
   reportId: string; // links to ReportsAndFlags.id
+  feedbackId?: string; // real Supabase feedback.id UUID — set when ticket is loaded from the feedback table
+  id?: string; // alias for feedbackId, populated from feedback row
   createdAt: string;
   updatedAt: string;
   status: TicketStatus;
@@ -487,6 +489,8 @@ interface AdminState {
   updateTicketStatus: (ticketId: string, status: TicketStatus) => Promise<{ success: boolean; error?: string }>;
   resolveTicket: (ticketId: string, adminId: string) => Promise<{ success: boolean; error?: string }>;
   reopenTicket: (ticketId: string, adminId: string) => Promise<{ success: boolean; error?: string }>;
+  markSupportTicketResolvedLocal: (feedbackId: string) => void;
+  removeSupportTicketLocal: (feedbackId: string) => void;
 
   // Support Message Methods
   getMessagesByTicketId: (ticketId: string) => SupportMessage[];
@@ -934,7 +938,32 @@ export const useAdminStore = create<AdminState>((set, get) => ({
         claimRequests,
         flaggedContent: storedFlaggedContent ? JSON.parse(storedFlaggedContent) : [],
         reportsAndFlags: storedReportsAndFlags ? JSON.parse(storedReportsAndFlags) : [],
-        supportTickets: await AsyncStorage.getItem('support_tickets').then(d => d ? JSON.parse(d) : []),
+        supportTickets: await (async (): Promise<SupportTicket[]> => {
+          const { data } = await supabase
+            .from<Record<string, unknown>>('feedback')
+            .select('*')
+            .neq('source_screen', 'support_dismissed')
+            .order('created_at', { ascending: false })
+            .execute();
+          return (data ?? []).map((row): SupportTicket => ({
+            ticketId: row.id as string,
+            id: row.id as string,
+            feedbackId: row.id as string,
+            reportId: '',
+            createdAt: row.created_at as string,
+            updatedAt: (row.handled_at ?? row.created_at) as string,
+            status: ((row.status as string) === 'resolved' ? 'resolved' : 'open') as TicketStatus,
+            farmerUserId: (row.user_id as string | null) ?? null,
+            farmerEmail: (row.user_email as string) ?? '',
+            subject: (row.category as string) ? `${row.category as string} Support` : 'Support Request',
+            category: (row.category as string) ?? 'general',
+            rating: (row.rating as number | null) ?? null,
+            lastMessagePreview: ((row.message as string) ?? '').slice(0, 120),
+            lastMessageAt: (row.handled_at ?? row.created_at) as string,
+            assignedAdminId: null,
+            assignedAdminEmail: (row.handled_by as string | null) ?? null,
+          }));
+        })(),
         supportMessages: await AsyncStorage.getItem('support_messages').then(d => d ? JSON.parse(d) : []),
         isLoading: false,
       });
@@ -2907,6 +2936,31 @@ export const useAdminStore = create<AdminState>((set, get) => ({
     set({ supportTickets });
 
     return { success: true };
+  },
+
+  markSupportTicketResolvedLocal: (feedbackId: string) => {
+    set((state) => ({
+      supportTickets: state.supportTickets.map((t) =>
+        t.feedbackId === feedbackId || t.id === feedbackId || t.ticketId === feedbackId
+          ? { ...t, status: 'resolved' as TicketStatus, updatedAt: new Date().toISOString() }
+          : t
+      ),
+    }));
+    if (__DEV__) {
+      const tickets = get().supportTickets;
+      console.log('[Admin Feedback] ticket status counts:', {
+        resolved: tickets.filter((t) => t.status === 'resolved').length,
+        open: tickets.filter((t) => t.status !== 'resolved').length,
+      });
+    }
+  },
+
+  removeSupportTicketLocal: (feedbackId: string) => {
+    set((state) => ({
+      supportTickets: state.supportTickets.filter(
+        (t) => t.feedbackId !== feedbackId && t.id !== feedbackId && t.ticketId !== feedbackId
+      ),
+    }));
   },
 
   reopenTicket: async (ticketId: string, adminId: string) => {

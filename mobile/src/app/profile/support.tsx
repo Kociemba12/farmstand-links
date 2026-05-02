@@ -1,9 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { View, Text, Pressable, ScrollView, Alert, ActivityIndicator } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, Stack } from 'expo-router';
 import {
-  ArrowLeft,
   MessageSquare,
   Clock,
   CheckCircle,
@@ -305,37 +303,20 @@ export default function SupportScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: '#FDF8F3' }}>
-      {/* Header */}
-      <SafeAreaView edges={['top']} style={{ backgroundColor: '#FDF8F3' }}>
-        <View
-          style={{
-            paddingHorizontal: 20,
-            paddingTop: 4,
-            paddingBottom: 14,
-            borderBottomWidth: 1,
-            borderBottomColor: '#EDE8E0',
-          }}
-        >
-          <Pressable
-            onPress={() => router.back()}
-            style={{ marginBottom: 10, alignSelf: 'flex-start', padding: 2, marginLeft: -2 }}
-          >
-            <ArrowLeft size={22} color="#4A7C59" />
-          </Pressable>
-          <Text
-            style={{
-              fontSize: 26,
-              fontWeight: '700',
-              color: '#1C1917',
-              letterSpacing: -0.5,
-            }}
-          >
-            My Tickets
-          </Text>
-        </View>
-      </SafeAreaView>
+      <Stack.Screen
+        options={{
+          title: 'My Tickets',
+          headerShown: true,
+          headerTitleAlign: 'center',
+          headerTitleStyle: { fontSize: 20, fontWeight: '600' },
+          headerStyle: { backgroundColor: '#FDF8F3' },
+          headerBackTitle: '',
+          headerBackButtonDisplayMode: 'minimal',
+          headerTintColor: '#2f6b46',
+          headerBackVisible: true,
+        }}
+      />
 
-      {/* Content */}
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 22, paddingBottom: 52 }}

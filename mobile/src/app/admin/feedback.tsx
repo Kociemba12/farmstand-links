@@ -43,11 +43,12 @@ import Animated, {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
 import { AdminGuard } from '@/components/AdminGuard';
-import { getValidSession, supabase, type SupabaseError } from '@/lib/supabase';
+import { supabase, type SupabaseError } from '@/lib/supabase';
 import { useUserStore } from '@/lib/user-store';
+import { useAdminUnreadStore } from '@/lib/admin-unread-store';
+import { useAdminStore } from '@/lib/admin-store';
 
 const BG_COLOR = '#FAF7F2';
-const BACKEND_URL = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const DELETE_THRESHOLD = 80;
 const FULL_SWIPE_THRESHOLD = SCREEN_WIDTH * 0.4;
@@ -255,6 +256,8 @@ const STATUS_FILTERS: { key: FeedbackStatus; label: string }[] = [
 
 function AdminFeedbackContent() {
   const router = useRouter();
+  const decrementAdminUnread = useAdminUnreadStore((s) => s.decrementCount);
+  const fetchAdminUnreadCount = useAdminUnreadStore((s) => s.fetchAdminUnreadCount);
   const [feedbackItems, setFeedbackItems] = useState<FeedbackRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -322,7 +325,8 @@ function AdminFeedbackContent() {
     useCallback(() => {
       setIsLoading(true);
       loadFeedback();
-    }, [loadFeedback])
+      fetchAdminUnreadCount();
+    }, [loadFeedback, fetchAdminUnreadCount])
   );
 
   const handleRefresh = useCallback(() => {
@@ -356,6 +360,32 @@ function AdminFeedbackContent() {
     }
   }, []);
 
+  const markStatus = useCallback(async (id: string, status: 'read' | 'resolved') => {
+    try {
+      if (status === 'resolved') {
+        const { error } = await supabase.rpc('mark_ticket_resolved', { p_ticket_id: id });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.rpc('mark_feedback_read', { p_ticket_id: id });
+        if (error) throw error;
+      }
+      if (__DEV__) console.log('[AdminFeedback] markStatus success — id:', id, '| status:', status);
+      setFeedbackItems((prev) => {
+        const next = prev.map((f) => (f.id === id ? { ...f, status } : f));
+        if (__DEV__) console.log('[Admin Feedback] ticket status counts:', {
+          resolved: next.filter((f) => f.status === 'resolved').length,
+          open: next.filter((f) => f.status !== 'resolved').length,
+        });
+        return next;
+      });
+      if (selectedItem?.id === id) {
+        setSelectedItem((prev) => prev ? { ...prev, status } : prev);
+      }
+    } catch (err) {
+      if (__DEV__) console.warn('[AdminFeedback] markStatus error:', err instanceof Error ? err.message : String(err));
+    }
+  }, [selectedItem]);
+
   const handleOpenDetail = useCallback((item: FeedbackRow) => {
     if (__DEV__) {
       console.log('[AdminFeedback] handleOpenDetail — ticketId:', item.id);
@@ -367,34 +397,14 @@ function AdminFeedbackContent() {
     setThread([]);
     setReplyText('');
     void loadThread(item.id);
-    // Mark as read if new
+    // Mark as read if new — never touch resolved tickets
+    if (item.status === 'resolved') return;
     if (item.status === 'new') {
+      if (__DEV__) console.log('[AdminFeedback] marking ticket read — id:', item.id);
       void markStatus(item.id, 'read');
+      decrementAdminUnread();
     }
-  }, [loadThread]);
-
-  const markStatus = useCallback(async (id: string, status: 'read' | 'resolved') => {
-    try {
-      const session = await getValidSession();
-      if (!session) return;
-      await fetch(`${BACKEND_URL}/api/feedback/${id}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({ status }),
-      });
-      setFeedbackItems((prev) =>
-        prev.map((f) => (f.id === id ? { ...f, status } : f))
-      );
-      if (selectedItem?.id === id) {
-        setSelectedItem((prev) => prev ? { ...prev, status } : prev);
-      }
-    } catch (err) {
-      if (__DEV__) console.warn('[AdminFeedback] markStatus error:', err instanceof Error ? err.message : String(err));
-    }
-  }, [selectedItem]);
+  }, [loadThread, markStatus, decrementAdminUnread]);
 
   const handleSendReply = useCallback(async () => {
     if (!selectedItem || !replyText.trim()) return;
@@ -473,6 +483,13 @@ function AdminFeedbackContent() {
   }, [selectedItem, markStatus]);
 
   const handleDeleteTicket = useCallback((id: string) => {
+    const ticketId = id;
+
+    if (!ticketId || ticketId.startsWith('ticket-')) {
+      Alert.alert('Error', 'Missing real ticket ID.');
+      return;
+    }
+
     Alert.alert(
       'Delete ticket?',
       'This will permanently remove this support/feedback ticket and its conversation.',
@@ -483,25 +500,23 @@ function AdminFeedbackContent() {
           style: 'destructive',
           onPress: async () => {
             try {
-              const session = await getValidSession();
-              if (!session) return;
-              const resp = await fetch(`${BACKEND_URL}/api/feedback/${id}`, {
-                method: 'DELETE',
-                headers: { Authorization: `Bearer ${session.access_token}` },
+              const { data, error } = await supabase.rpc('admin_delete_feedback_ticket', {
+                p_ticket_id: ticketId,
               });
-              const fct4 = resp.headers.get('content-type') ?? '';
-              if (!fct4.includes('application/json')) {
-                console.log('[AdminFeedback] delete non-JSON response (HTTP', resp.status, '), content-type:', fct4);
-                return;
-              }
-              const json = await resp.json() as { success: boolean };
-              if (json.success) {
-                setFeedbackItems((prev) => prev.filter((f) => f.id !== id));
-                if (selectedItem?.id === id) setSelectedItem(null);
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              }
+
+              if (__DEV__) console.log('[Admin Feedback] delete RPC result:', { data, error });
+
+              if (error) throw error;
+
+              setFeedbackItems((prev) =>
+                prev.filter((f) => f.id !== ticketId)
+              );
+              if (selectedItem?.id === ticketId) setSelectedItem(null);
+              useAdminStore.getState().removeSupportTicketLocal(ticketId);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             } catch (err) {
               if (__DEV__) console.warn('[AdminFeedback] delete error:', err instanceof Error ? err.message : String(err));
+              Alert.alert('Delete failed', err instanceof Error ? err.message : 'Could not delete ticket. Please try again.');
             }
           },
         },

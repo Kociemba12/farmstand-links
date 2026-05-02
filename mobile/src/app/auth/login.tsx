@@ -10,7 +10,6 @@ import {
   ScrollView,
   StyleSheet,
   Alert,
-  Image,
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -28,9 +27,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LegalModal } from '@/components/LegalModal';
 import { useAuth } from '@/providers/AuthProvider';
 import Svg, { Path } from 'react-native-svg';
-
-const LOGO_WIDTH = 300;
-const LOGO_HEIGHT = 112;
+import { FarmstandLogoPng, LOGO_WIDTH, LOGO_HEIGHT } from '@/components/FarmstandLogoPng';
 
 function GoogleIcon() {
   return (
@@ -397,7 +394,8 @@ export default function LoginScreen() {
   const anyLoading = isLoading;
 
   // Header height: top safe area + logo + tight padding
-  const headerHeight = insets.top + LOGO_HEIGHT + 12;
+  // tight=true renders at 47px visible height (TIGHT_CONTENT_H); header = insets + 8(paddingTop) + 47 + 12(paddingBottom)
+  const headerHeight = insets.top + 67;
 
   return (
     <View style={styles.container}>
@@ -415,10 +413,11 @@ export default function LoginScreen() {
         entering={FadeIn.duration(600)}
         style={[styles.logoHeader, { height: headerHeight, paddingTop: insets.top + 8 }]}
       >
-        <Image
-          source={require('../../../assets/farmstand-logo.png')}
-          style={styles.logo}
-          resizeMode="contain"
+        <FarmstandLogoPng
+          width={LOGO_WIDTH}
+          height={LOGO_HEIGHT}
+          tintColor="#FFFFFF"
+          tight
         />
       </Animated.View>
 
@@ -660,14 +659,8 @@ const styles = StyleSheet.create({
   logoHeader: {
     alignItems: 'center',
     justifyContent: 'flex-end',
-    paddingBottom: 12,
+    paddingBottom: 4,
   },
-  logo: {
-    width: LOGO_WIDTH,
-    height: LOGO_HEIGHT,
-    tintColor: '#FFFFFF',
-  },
-
   // ── KeyboardAvoidingView wrapper ──────────────────────────────────────────
   kavWrapper: {
     flex: 1,

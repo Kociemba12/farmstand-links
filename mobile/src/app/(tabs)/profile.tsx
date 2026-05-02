@@ -629,7 +629,7 @@ export default function ProfileScreen() {
 
   const handleMenuPress = async (route: string) => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push(route as never);
+    router.navigate(route as never);
   };
 
   const handleStatPress = async (type: 'visited' | 'reviews') => {

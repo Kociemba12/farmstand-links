@@ -106,6 +106,7 @@ export type TicketStatus =
 
 export interface SupportTicket {
   id: string;
+  feedbackId: string; // same as id — explicit alias for the Supabase feedback.id UUID
   user_id: string;
   user_email: string;
   subject: string;
@@ -202,6 +203,7 @@ export async function fetchSupportTickets(): Promise<SupportTicket[]> {
     const msg = (row.message as string) ?? '';
     return {
       id:              row.id as string,
+      feedbackId:      row.id as string,
       user_id:         row.user_id as string,
       user_email:      row.user_email as string,
       subject:         msg.length > 60 ? msg.slice(0, 60) + '…' : msg,

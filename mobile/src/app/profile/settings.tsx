@@ -10,9 +10,7 @@ import {
   TextInput,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import {
-  ArrowLeft,
   User,
   Lock,
   Shield,
@@ -22,7 +20,7 @@ import {
   X,
   Bell,
 } from 'lucide-react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, Stack } from 'expo-router';
 import { useUserStore } from '@/lib/user-store';
 import * as Haptics from 'expo-haptics';
 import { MenuRow } from '@/components/MenuRow';
@@ -154,15 +152,19 @@ export default function SettingsScreen() {
 
   return (
     <View className="flex-1" style={{ backgroundColor: '#FDF8F3' }}>
-      {/* Light header matching Saved/Inbox style */}
-      <SafeAreaView edges={['top']} style={{ backgroundColor: '#FDF8F3' }}>
-        <View style={{ paddingHorizontal: 20, paddingTop: 4, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: '#EDE8E0' }}>
-          <Pressable onPress={() => router.back()} style={{ marginBottom: 12, alignSelf: 'flex-start', padding: 2, marginLeft: -2 }}>
-            <ArrowLeft size={22} color="#4A7C59" />
-          </Pressable>
-          <Text style={{ fontSize: 26, fontWeight: '700', color: '#2C2420', letterSpacing: -0.3 }}>Settings</Text>
-        </View>
-      </SafeAreaView>
+      <Stack.Screen
+        options={{
+          title: 'Settings',
+          headerShown: true,
+          headerTitleAlign: 'center',
+          headerTitleStyle: { fontSize: 20, fontWeight: '600' },
+          headerStyle: { backgroundColor: '#FDF8F3' },
+          headerBackTitle: '',
+          headerBackButtonDisplayMode: 'minimal',
+          headerTintColor: '#2f6b46',
+          headerBackVisible: true,
+        }}
+      />
 
       <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
         <View style={styles.content}>

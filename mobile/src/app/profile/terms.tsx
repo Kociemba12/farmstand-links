@@ -1,8 +1,6 @@
 import React from 'react';
-import { View, Text, ScrollView, Pressable, Linking, Alert } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft, ExternalLink } from 'lucide-react-native';
-import { useRouter } from 'expo-router';
+import { View, Text, ScrollView, Linking, Alert } from 'react-native';
+import { Stack } from 'expo-router';
 import { settingsStyles, settingsColors } from '@/lib/settings-styles';
 
 const TERMS_URL = 'https://farmstand.app/terms';
@@ -24,26 +22,21 @@ async function openMailto(email: string) {
 }
 
 export default function TermsScreen() {
-  const router = useRouter();
-
-  const handleOpenExternal = () => {
-    Linking.openURL(TERMS_URL);
-  };
-
   return (
     <View style={settingsStyles.pageContainer}>
-      {/* Header */}
-      <SafeAreaView edges={['top']} style={settingsStyles.header}>
-        <View style={settingsStyles.headerContent}>
-          <Pressable onPress={() => router.back()} style={settingsStyles.headerBackButton}>
-            <ArrowLeft size={22} color={settingsColors.headerText} />
-          </Pressable>
-          <Text style={settingsStyles.headerTitle}>Terms of Service</Text>
-          <Pressable onPress={handleOpenExternal} style={settingsStyles.headerRightButton}>
-            <ExternalLink size={20} color={settingsColors.headerText} />
-          </Pressable>
-        </View>
-      </SafeAreaView>
+      <Stack.Screen
+        options={{
+          title: 'Terms of Service',
+          headerShown: true,
+          headerTitleAlign: 'center',
+          headerTitleStyle: { fontSize: 20, fontWeight: '600' },
+          headerStyle: { backgroundColor: settingsColors.headerBackground },
+          headerBackTitle: '',
+          headerBackButtonDisplayMode: 'minimal',
+          headerTintColor: '#2f6b46',
+          headerBackVisible: true,
+        }}
+      />
 
       <ScrollView
         style={{ flex: 1 }}

@@ -169,18 +169,22 @@ async function persistHideThread(userId: string, farmstandId: string, otherUserI
     `(and(customer_id.eq.${userId},owner_id.eq.${otherUserId}),and(customer_id.eq.${otherUserId},owner_id.eq.${userId}))`
   );
   const convRes = await supabaseFetch(
-    `conversations?farmstand_id=eq.${farmstandId}&or=${orFilter}&select=id&limit=1`
+    `conversations?farmstand_id=eq.${farmstandId}&or=${orFilter}&select=id,owner_id,customer_id&limit=1`
   );
   if (!convRes.ok) {
     console.log(`[HiddenThreads] Supabase conv lookup failed for farmstand=${farmstandId} — SQLite-only hide`);
     return;
   }
-  const rows = (await convRes.json()) as Array<{ id: string }>;
-  const conversationId = rows[0]?.id;
+  type ConvLookupRow = { id: string; owner_id: string; customer_id: string };
+  const rows = (await convRes.json()) as Array<ConvLookupRow>;
+  const conv = rows[0];
+  const conversationId = conv?.id;
   if (!conversationId) {
     console.log(`[HiddenThreads] no conversations row for farmstand=${farmstandId} userId=${userId} otherUserId=${otherUserId} — SQLite-only hide (orphaned thread)`);
     return;
   }
+
+  // Insert into hidden_threads (for backward-compat unread-count filter)
   const res = await supabasePost(
     "hidden_threads",
     { user_id: userId, thread_id: conversationId },
@@ -188,9 +192,32 @@ async function persistHideThread(userId: string, farmstandId: string, otherUserI
   );
   if (!res.ok) {
     const text = await res.text();
-    console.log(`[HiddenThreads] Supabase insert error ${res.status}:`, text.slice(0, 200));
+    console.log(`[HiddenThreads] Supabase hidden_threads insert error ${res.status}:`, text.slice(0, 200));
   } else {
-    console.log(`[HiddenThreads] persisted to Supabase: userId=${userId} conversationId=${conversationId}`);
+    console.log(`[HiddenThreads] persisted to Supabase hidden_threads: userId=${userId} conversationId=${conversationId}`);
+  }
+
+  // Also soft-delete the conversations row so deletion persists through reinstall.
+  // Determine if userId is owner or customer, then set the correct column.
+  const isOwner = conv.owner_id === userId;
+  const patchCol = isOwner ? "deleted_by_owner_at" : "deleted_by_customer_at";
+  const deletedAt = new Date().toISOString();
+  console.log(`[HiddenThreads] setting ${patchCol} on conversations row: userId=${userId} conversationId=${conversationId} role=${isOwner ? "owner" : "customer"} deletedAt=${deletedAt}`);
+  const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/conversations?id=eq.${conversationId}`, {
+    method: "PATCH",
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: "return=minimal",
+    },
+    body: JSON.stringify({ [patchCol]: deletedAt }),
+  });
+  if (!patchRes.ok) {
+    const text = await patchRes.text();
+    console.log(`[HiddenThreads] conversations PATCH failed ${patchRes.status}:`, text.slice(0, 200));
+  } else {
+    console.log(`[HiddenThreads] ${patchCol} set for conversationId=${conversationId}`);
   }
 }
 

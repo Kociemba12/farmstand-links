@@ -11,9 +11,9 @@ import {
   ScrollView,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, X, Camera, Send } from 'lucide-react-native';
-import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { X, Camera, Send } from 'lucide-react-native';
+import { useRouter, Stack } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import { useUserStore } from '@/lib/user-store';
@@ -274,15 +274,19 @@ export default function RateUsScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: '#FDF8F3' }}>
-      {/* Settings-style light header */}
-      <SafeAreaView edges={['top']} style={{ backgroundColor: '#FDF8F3' }}>
-        <View style={{ paddingHorizontal: 20, paddingTop: 4, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: '#EDE8E0' }}>
-          <Pressable onPress={() => router.back()} style={{ marginBottom: 12, alignSelf: 'flex-start', padding: 2, marginLeft: -2 }}>
-            <ArrowLeft size={22} color="#4A7C59" />
-          </Pressable>
-          <Text style={{ fontSize: 26, fontWeight: '700', color: '#2C2420', letterSpacing: -0.3 }}>Support</Text>
-        </View>
-      </SafeAreaView>
+      <Stack.Screen
+        options={{
+          title: 'Support',
+          headerShown: true,
+          headerTitleAlign: 'center',
+          headerTitleStyle: { fontSize: 20, fontWeight: '600' },
+          headerStyle: { backgroundColor: '#FDF8F3' },
+          headerBackTitle: '',
+          headerBackButtonDisplayMode: 'minimal',
+          headerTintColor: '#2f6b46',
+          headerBackVisible: true,
+        }}
+      />
 
       <KeyboardAwareScrollView
         style={{ flex: 1 }}

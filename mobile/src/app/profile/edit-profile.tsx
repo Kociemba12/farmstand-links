@@ -10,8 +10,8 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft, User, Mail, Camera } from 'lucide-react-native';
-import { useRouter } from 'expo-router';
+import { User, Mail, Camera } from 'lucide-react-native';
+import { useRouter, Stack } from 'expo-router';
 import { useUserStore } from '@/lib/user-store';
 import { settingsStyles, settingsColors } from '@/lib/settings-styles';
 import { uploadAvatarAndPersist, isSupabaseConfigured } from '@/lib/supabase';
@@ -158,15 +158,19 @@ export default function EditProfileScreen() {
 
   return (
     <View style={settingsStyles.pageContainer}>
-      {/* Header */}
-      <SafeAreaView edges={['top']} style={settingsStyles.header}>
-        <View style={settingsStyles.headerContent}>
-          <Pressable onPress={() => router.back()} style={settingsStyles.headerBackButton}>
-            <ArrowLeft size={22} color={settingsColors.headerText} />
-          </Pressable>
-          <Text style={settingsStyles.headerTitle}>Edit Profile</Text>
-        </View>
-      </SafeAreaView>
+      <Stack.Screen
+        options={{
+          title: 'Edit Profile',
+          headerShown: true,
+          headerTitleAlign: 'center',
+          headerTitleStyle: { fontSize: 20, fontWeight: '600' },
+          headerStyle: { backgroundColor: settingsColors.headerBackground },
+          headerBackTitle: '',
+          headerBackButtonDisplayMode: 'minimal',
+          headerTintColor: '#2f6b46',
+          headerBackVisible: true,
+        }}
+      />
 
       <ScrollView
         style={{ flex: 1 }}
