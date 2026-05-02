@@ -941,7 +941,7 @@ export default function MyFarmstandScreen() {
     const shareUrl = `https://links.farmstand.online/farmstand/${shareSlug}`;
     try {
       await Share.share({
-        message: `Check out ${currentFarmstand.name} on Farmstand 🌱 ${shareUrl}`,
+        message: `Check out ${currentFarmstand.name} on the Farmstand app 🌱 ${shareUrl}`,
       });
     } catch (error) {
       console.error('Error sharing:', error);

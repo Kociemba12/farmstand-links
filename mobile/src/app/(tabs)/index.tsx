@@ -48,6 +48,7 @@ import { LocationBanner } from '@/components/LocationBanner';
 import { GoldVerifiedRibbon } from '@/components/GoldVerifiedRibbon';
 import { isPremiumFarmstand } from '@/components/PremiumBadge';
 import { logSearch, logProductChipTap, logScreenView, logExploreOpen } from '@/lib/analytics-events';
+import { registerPushTokenForCurrentUser } from '@/lib/push';
 import { trackEvent } from '@/lib/track';
 import { useFocusEffect } from '@react-navigation/native';
 import { classifySearchQuery, findFarmstandsByName, SearchContext } from '@/lib/search-store';
@@ -926,6 +927,24 @@ const [focusResetKey, setFocusResetKey] = useState(0);
       return () => clearTimeout(timer);
     }
   }, [splashDismissed, hasSeenLocationOnboarding, permissionStatus]);
+
+  // Request notification permission after Explore mounts and splash is dismissed.
+  // Delaying until here ensures the iOS prompt never overlaps the login transition.
+  const notificationPromptFiredRef = useRef(false);
+  useEffect(() => {
+    if (!splashDismissed) return;
+    if (!user?.id || user.id === 'guest') return;
+    if (notificationPromptFiredRef.current) return;
+    notificationPromptFiredRef.current = true;
+    if (__DEV__) console.log('[Notifications] Explore mounted, scheduling permission prompt');
+    const timer = setTimeout(() => {
+      if (__DEV__) console.log('[Notifications] requesting permission');
+      registerPushTokenForCurrentUser(user.id ?? undefined, { promptIfNeeded: true })
+        .then(() => { if (__DEV__) console.log('[Notifications] permission result: granted or already set'); })
+        .catch(() => { if (__DEV__) console.log('[Notifications] permission result: error or denied'); });
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [splashDismissed, user?.id]);
 
   // Sync anchor location to explore store when it changes
   useEffect(() => {

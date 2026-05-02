@@ -21,7 +21,6 @@ import { Mail, Lock, Eye, EyeOff } from 'lucide-react-native';
 import Animated, { FadeIn, FadeInUp, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 import { useUserStore, isAdminEmail } from '@/lib/user-store';
 import { supabaseAuthSignIn, isSupabaseConfigured, setSupabaseSession, supabaseResetPassword, fetchProfileAvatarUrl, supabaseSignInWithOAuth, fetchSupabaseProfileFull } from '@/lib/supabase';
-import { registerPushTokenForCurrentUser } from '@/lib/push';
 import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LegalModal } from '@/components/LegalModal';
@@ -202,13 +201,6 @@ export default function LoginScreen() {
 
         await loadUser();
 
-        // HARD GUARANTEE: force push token registration immediately after login.
-        // This runs asynchronously so it does not block navigation.
-        console.log('[PushDebug][Login] Auth success — forcing push token registration for userId:', data.user.id);
-        registerPushTokenForCurrentUser(data.user.id).catch((err) => {
-          console.log('[PushDebug][Login] Push token registration error (non-fatal):', err);
-        });
-
         // Navigate first — keep loading state so the form never flashes back to
         // interactive while the transition is in progress.  The component unmounts
         // after the reset so setIsLoading is not needed.
@@ -329,12 +321,6 @@ export default function LoginScreen() {
         await AsyncStorage.setItem('farmstand_user', JSON.stringify(userProfile));
         await AsyncStorage.setItem('farmstand_logged_in', 'true');
         await loadUser();
-
-        // HARD GUARANTEE: force push token registration immediately after social login.
-        console.log('[PushDebug][SocialLogin] Auth success — forcing push token registration for userId:', userId);
-        registerPushTokenForCurrentUser(userId).catch((err) => {
-          console.log('[PushDebug][SocialLogin] Push token registration error (non-fatal):', err);
-        });
 
         socialLoadingRef.current = false;
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);

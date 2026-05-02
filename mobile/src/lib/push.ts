@@ -118,7 +118,7 @@ async function upsertToPushTokens(
  * Saves to both device_push_tokens and push_tokens tables
  * @param userId - The authenticated user's ID
  */
-export async function registerPushTokenForCurrentUser(userId?: string): Promise<void> {
+export async function registerPushTokenForCurrentUser(userId?: string, opts?: { promptIfNeeded?: boolean }): Promise<void> {
   try {
     if (!userId) {
       console.log("[Push] No user ID provided, skipping");
@@ -170,9 +170,14 @@ export async function registerPushTokenForCurrentUser(userId?: string): Promise<
     console.log("[PushDebug] permission status (initial):", finalStatus);
 
     if (finalStatus !== "granted") {
+      if (!opts?.promptIfNeeded) {
+        console.log("[Push] Permission not granted and promptIfNeeded=false — skipping token registration");
+        return;
+      }
+      console.log("[Notifications] requesting permission");
       const req = await Notifications.requestPermissionsAsync();
       finalStatus = req.status;
-      console.log("[PushDebug] permission status (after request):", finalStatus);
+      console.log("[Notifications] permission result:", finalStatus);
     }
 
     if (finalStatus !== "granted") {

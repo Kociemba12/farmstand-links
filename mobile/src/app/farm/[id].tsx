@@ -592,7 +592,7 @@ export default function FarmDetailScreen() {
           // 'title' appears as the preview title
           title: farm.name,
           // URL is included in message so iOS doesn't append it a second time
-          message: `Check out ${farm.name} on Farmstand 🌱 ${shareUrl}`,
+          message: `Check out ${farm.name} on the Farmstand app 🌱 ${shareUrl}`,
         },
         {
           // iOS-specific: Set the subject for email/messages

@@ -521,7 +521,7 @@ export async function getNotificationPrefs(userId: string): Promise<UserNotifica
  *
  * Safe to call multiple times - will only request permissions once
  */
-export async function initializePushNotifications(userId: string): Promise<{
+export async function initializePushNotifications(userId: string, opts?: { promptIfNeeded?: boolean }): Promise<{
   success: boolean;
   token: string | null;
   permissionStatus: 'granted' | 'denied' | 'undetermined';
@@ -538,8 +538,16 @@ export async function initializePushNotifications(userId: string): Promise<{
     };
   }
 
-  // Request permissions
-  const permissionStatus = await requestNotificationPermissions();
+  // Only show the iOS permission prompt when explicitly requested.
+  // On all other call sites (app start, login, foreground sync), check current
+  // status only — the Explore screen is the sole prompt entry point.
+  let permissionStatus: 'granted' | 'denied' | 'undetermined';
+  if (opts?.promptIfNeeded) {
+    permissionStatus = await requestNotificationPermissions();
+  } else {
+    const { status } = await Notifications.getPermissionsAsync();
+    permissionStatus = status as 'granted' | 'denied' | 'undetermined';
+  }
 
   if (permissionStatus !== 'granted') {
     console.log('[PushNotifications] Permission not granted, skipping token registration');

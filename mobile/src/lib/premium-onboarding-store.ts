@@ -197,17 +197,24 @@ export async function checkForPendingPremiumOnboarding(
     `[PremiumOnboarding] checkForPending: userId=${userId}, farmstands=${farmstands.length}`
   );
 
-  for (const farmstand of farmstands) {
-    console.log(
-      `[PremiumOnboarding] Checking farmstand id=${farmstand.id} claimStatus=${farmstand.claimStatus} premiumStatus=${farmstand.premiumStatus} ownerUserId=${farmstand.ownerUserId ?? 'unknown'}`
-    );
+  // Only evaluate farmstands explicitly owned by the current user.
+  // Farmstands missing ownerUserId are excluded — we cannot verify ownership.
+  const ownedByUser = farmstands.filter(
+    (f) => f.ownerUserId != null && f.ownerUserId !== '' && f.ownerUserId === userId
+  );
 
-    // Never trigger onboarding for a farmstand the current user doesn't own.
-    // This prevents admin users from seeing the modal after approving someone else's claim.
-    if (farmstand.ownerUserId && farmstand.ownerUserId !== userId) {
-      console.log(`[PremiumOnboarding] Skipping: ownerUserId=${farmstand.ownerUserId} does not match userId=${userId}`);
-      continue;
-    }
+  if (ownedByUser.length === 0) {
+    console.log(`[PremiumOnboarding] No farmstands owned by userId=${userId} — skipping`);
+    usePremiumOnboardingStore.getState().setPendingFarmstandId(null);
+    return null;
+  }
+
+  console.log(`[PremiumOnboarding] Evaluating ${ownedByUser.length} owned farmstand(s) for userId=${userId}`);
+
+  for (const farmstand of ownedByUser) {
+    console.log(
+      `[PremiumOnboarding] Checking farmstand id=${farmstand.id} claimStatus=${farmstand.claimStatus} premiumStatus=${farmstand.premiumStatus}`
+    );
 
     if (farmstand.claimStatus !== 'claimed') {
       console.log(`[PremiumOnboarding] Skipping: claimStatus=${farmstand.claimStatus} (not claimed)`);
