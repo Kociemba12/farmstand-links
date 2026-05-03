@@ -151,7 +151,7 @@ export default function FarmerOnboardingScreen() {
   // Form latitude/longitude must start null and only be set via autocomplete
   // selection, reverse-geocode, or manual pin placement.
   const [locationData, setLocationData] = useState<LocationInputData>(() => {
-    return createDefaultLocationData(isGuestUser ? 'cross_streets' : 'exact_address');
+    return createDefaultLocationData('exact_address');
   });
 
   // Ref to LocationInput component for imperative geocoding
