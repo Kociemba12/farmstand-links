@@ -11,7 +11,7 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft, Star, MessageSquare, Send, Pencil, Trash2 } from 'lucide-react-native';
+import { ArrowLeft, Star, MessageSquare, Send, Pencil } from 'lucide-react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useReviewsStore, Review } from '@/lib/reviews-store';
 import { useUserStore } from '@/lib/user-store';
@@ -56,7 +56,6 @@ export default function ReviewDetailScreen() {
   const reviewsByFarm = useReviewsStore((s) => s.reviewsByFarm);
   const addOwnerResponse = useReviewsStore((s) => s.addOwnerResponse);
   const updateOwnerResponse = useReviewsStore((s) => s.updateOwnerResponse);
-  const deleteOwnerResponse = useReviewsStore((s) => s.deleteOwnerResponse);
   const user = useUserStore((s) => s.user);
 
   const [review, setReview] = useState<Review | null>(null);
@@ -160,31 +159,6 @@ export default function ReviewDetailScreen() {
     }
   };
 
-  const handleDeleteReply = async () => {
-    if (!reviewId) return;
-    Alert.alert(
-      'Delete Reply',
-      'Are you sure you want to delete your reply?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            try {
-              await deleteOwnerResponse(reviewId);
-              if (farmstandId) await loadReviewsForFarm(farmstandId);
-              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            } catch (error) {
-              Alert.alert('Error', 'Failed to delete reply. Please try again.');
-            }
-          },
-        },
-      ]
-    );
-  };
-
   if (isLoading) {
     return (
       <View className="flex-1 bg-cream items-center justify-center">
@@ -282,7 +256,7 @@ export default function ReviewDetailScreen() {
                 </View>
                 <Text className="text-charcoal">{review.response.text}</Text>
 
-                {/* Edit / Delete */}
+                {/* Edit */}
                 <View className="flex-row mt-4 gap-2">
                   <Pressable
                     onPress={handleStartEdit}
@@ -291,14 +265,6 @@ export default function ReviewDetailScreen() {
                   >
                     <Pencil size={13} color="#44403C" />
                     <Text style={{ fontSize: 13, fontWeight: '500', color: '#44403C' }}>Edit</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={handleDeleteReply}
-                    className="flex-row items-center px-4 py-2 rounded-full"
-                    style={{ gap: 5, backgroundColor: '#FDECEA' }}
-                  >
-                    <Trash2 size={13} color="#C45C3E" />
-                    <Text style={{ fontSize: 13, fontWeight: '500', color: '#C45C3E' }}>Delete</Text>
                   </Pressable>
                 </View>
               </View>

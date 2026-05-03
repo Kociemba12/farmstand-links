@@ -132,6 +132,8 @@ interface ReviewsState {
   /** Legacy alias — delegates to addOwnerResponse */
   addFarmerResponse: (reviewId: string, responseText: string) => Promise<void>;
 
+  /** User: permanently delete one of their own reviews by id */
+  deleteMyReview: (reviewId: string, userId: string) => Promise<{ success: boolean; error?: string }>;
   markHelpful: (reviewId: string) => void;
   clearAllReviews: () => void;
   /** Fetch aggregated rating stats for ALL farmstands in one query and sync to admin store. */
@@ -240,6 +242,34 @@ export const useReviewsStore = create<ReviewsState>((set, get) => ({
 
     const reviews = data.map((row) => mapRowToReview(row, avatarUrl));
     set({ myReviews: reviews });
+  },
+
+  // ── deleteMyReview ───────────────────────────────────────────────────────
+  deleteMyReview: async (reviewId: string, userId: string): Promise<{ success: boolean; error?: string }> => {
+    if (!isSupabaseConfigured()) return { success: false, error: 'Supabase not configured' };
+
+    const { error } = await supabase
+      .from<SupabaseReviewRow>('farmstand_reviews')
+      .delete()
+      .eq('id', reviewId)
+      .eq('user_id', userId)
+      .execute();
+
+    if (error) {
+      console.log('[Reviews] deleteMyReview error:', error.message);
+      return { success: false, error: error.message };
+    }
+
+    set((state) => {
+      const updatedMyReviews = state.myReviews.filter((r) => r.id !== reviewId);
+      const updatedByFarm: Record<string, Review[]> = {};
+      for (const [farmId, reviews] of Object.entries(state.reviewsByFarm)) {
+        updatedByFarm[farmId] = reviews.filter((r) => r.id !== reviewId);
+      }
+      return { myReviews: updatedMyReviews, reviewsByFarm: updatedByFarm };
+    });
+
+    return { success: true };
   },
 
   // ── getReviewsForFarm ────────────────────────────────────────────────────

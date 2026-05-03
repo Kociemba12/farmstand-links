@@ -18,6 +18,7 @@ import {
   Star,
   Crown,
   Clock,
+  MessageSquare,
 } from 'lucide-react-native';
 import Animated, { FadeInDown, FadeIn, FadeOut } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
@@ -39,6 +40,8 @@ import { FarmstandDebugOverlay, FarmstandDebugState, FARMSTAND_DEBUG_INITIAL } f
 import { ProfileFarmstandSkeleton, ProfileAnalyticsSkeleton } from '@/components/ProfileSkeletons';
 import { checkForPendingPremiumOnboarding, usePremiumOnboardingStore } from '@/lib/premium-onboarding-store';
 import { useSupportUnreadStore } from '@/lib/support-unread-store';
+import { useReviewsStore } from '@/lib/reviews-store';
+import { useReviewUnread, redDotStyle } from '@/lib/review-unread';
 import { registerPushTokenForCurrentUser } from '@/lib/push';
 import { Bell } from 'lucide-react-native';
 
@@ -51,6 +54,16 @@ const BACKEND_URL = (process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL ?? '').replace
 
 // Default farmstand hero image - rustic produce stand with warm tones
 const DEFAULT_FARMSTAND_HERO = 'https://images.unsplash.com/photo-1488459716781-31db52582fe9?w=800&q=80';
+
+function FarmstandUnreadDot({ farmstandId }: { farmstandId: string }) {
+  const hasUnread = useReviewUnread(farmstandId);
+  if (!hasUnread) return null;
+  return (
+    <View style={{ position: 'absolute', top: 12, right: 12, zIndex: 10 }}>
+      <View style={redDotStyle} />
+    </View>
+  );
+}
 
 // Account Tile Component (2-column grid)
 interface AccountTileProps {
@@ -280,6 +293,10 @@ export default function ProfileScreen() {
   const isAdmin = isAdminByEmail || adminStatus === 'admin';
   const isAdminLoading = !isAdminByEmail && adminStatus === 'loading';
 
+  // Reviews written by this user (source of truth for the Reviews stat)
+  const myReviews = useReviewsStore((s) => s.myReviews);
+  const loadMyReviews = useReviewsStore((s) => s.loadMyReviews);
+
   // Get admin store helpers
   const loadAdminData = useAdminStore((s) => s.loadAdminData);
   const allFarmstands = useAdminStore((s) => s.allFarmstands);
@@ -487,6 +504,9 @@ export default function ProfileScreen() {
         if (user?.email) {
           checkAdminStatus(user.email);
         }
+        if (user?.id) {
+          loadMyReviews(user.id);
+        }
 
         // Premium onboarding in-app trigger: after farmstands are loaded, check if onboarding is pending
         // Reset check flag on each focus so we re-check after every refresh (e.g. after claim approval)
@@ -499,7 +519,7 @@ export default function ProfileScreen() {
         isFocusedRef.current = false;
       };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [user?.id, user?.email, authLoading, doProfileRefresh])
+    }, [user?.id, user?.email, authLoading, doProfileRefresh, loadMyReviews])
   );
 
   // Auth-ready trigger: fires when authLoading transitions true → false.
@@ -630,11 +650,6 @@ export default function ProfileScreen() {
   const handleMenuPress = async (route: string) => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.navigate(route as never);
-  };
-
-  const handleStatPress = async (type: 'visited' | 'reviews') => {
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push(`/profile/${type}` as never);
   };
 
   const handleFarmerPress = async () => {
@@ -847,43 +862,6 @@ export default function ProfileScreen() {
             </Text>
           </View>
 
-          {/* Stats Card - only for logged in users */}
-          {!isGuestUser && (
-            <View className="px-5 mt-4">
-              <Animated.View
-                entering={FadeInDown.delay(100).duration(400)}
-                style={{
-                  backgroundColor: '#FFFCF9',
-                  borderRadius: 22,
-                  shadowColor: '#000',
-                  shadowOffset: { width: 0, height: 4 },
-                  shadowOpacity: 0.06,
-                  shadowRadius: 12,
-                  elevation: 4,
-                }}
-              >
-                <View className="flex-row" style={{ height: 92 }}>
-                  <Pressable
-                    className="flex-1 items-center justify-center border-r border-stone-100 active:bg-stone-50"
-                    onPress={() => handleStatPress('visited')}
-                    style={{ borderTopLeftRadius: 22, borderBottomLeftRadius: 22 }}
-                  >
-                    <Text className="text-stone-900 text-3xl font-bold">{user.visitedCount}</Text>
-                    <Text className="text-stone-500 text-sm mt-1">Visited</Text>
-                  </Pressable>
-                  <Pressable
-                    className="flex-1 items-center justify-center active:bg-stone-50"
-                    onPress={() => handleStatPress('reviews')}
-                    style={{ borderTopRightRadius: 22, borderBottomRightRadius: 22 }}
-                  >
-                    <Text className="text-stone-900 text-3xl font-bold">{user.reviewsCount}</Text>
-                    <Text className="text-stone-500 text-sm mt-1">Reviews</Text>
-                  </Pressable>
-                </View>
-              </Animated.View>
-            </View>
-          )}
-
           {/* Main Content */}
           <View className="px-5 pt-6">
           {isGuestUser && (
@@ -1029,6 +1007,7 @@ export default function ProfileScreen() {
                                 <ChevronRight size={20} color="#A8A29E" />
                               </View>
                             </View>
+                            <FarmstandUnreadDot farmstandId={farmstand.id} />
                           </Pressable>
 
                           {/* Premium status bar inside farmstand card */}
@@ -1167,6 +1146,13 @@ export default function ProfileScreen() {
                 entering={FadeInDown.delay(400).duration(400)}
                 className="mb-5"
               >
+                <AccountTile
+                  icon={MessageSquare}
+                  label="My Reviews"
+                  onPress={() => handleMenuPress('/profile/reviews')}
+                  fullWidth
+                />
+                <View style={{ height: 8 }} />
                 <AccountTile
                   icon={Settings}
                   label="Settings"

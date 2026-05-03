@@ -12,7 +12,7 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ChevronLeft, Star, Send, MessageSquare, ChevronRight, Pencil, Trash2 } from 'lucide-react-native';
+import { ChevronLeft, Star, Send, MessageSquare, ChevronRight, Pencil } from 'lucide-react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useReviewsStore, Review } from '@/lib/reviews-store';
@@ -58,7 +58,6 @@ export default function ReviewDetailScreen() {
   const reviewsByFarm = useReviewsStore((s) => s.reviewsByFarm);
   const addOwnerResponse = useReviewsStore((s) => s.addOwnerResponse);
   const updateOwnerResponse = useReviewsStore((s) => s.updateOwnerResponse);
-  const deleteOwnerResponse = useReviewsStore((s) => s.deleteOwnerResponse);
   const adminFarmstands = useAdminStore((s) => s.allFarmstands);
   const loadAdminData = useAdminStore((s) => s.loadAdminData);
   const user = useUserStore((s) => s.user);
@@ -182,21 +181,6 @@ export default function ReviewDetailScreen() {
       }
     } finally {
       setIsSending(false);
-    }
-  };
-
-  const handleDeleteReply = async () => {
-    if (!reviewId) return;
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    try {
-      await deleteOwnerResponse(reviewId);
-      const updatedReview = Object.values(useReviewsStore.getState().reviewsByFarm)
-        .flat()
-        .find((r: Review) => r.id === reviewId);
-      setReview(updatedReview ?? null);
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (error) {
-      console.error('Failed to delete reply:', error);
     }
   };
 
@@ -444,7 +428,7 @@ export default function ReviewDetailScreen() {
                 {review.response.date ? getRelativeTime(review.response.date) : ''}
               </Text>
 
-              {/* Edit / Delete pill buttons */}
+              {/* Edit pill button */}
               {isOwner && (
                 <View style={{ flexDirection: 'row', marginTop: 10, gap: 8 }}>
                   <Pressable
@@ -462,23 +446,6 @@ export default function ReviewDetailScreen() {
                     <Pencil size={13} color="#44403C" />
                     <Text style={{ fontSize: 13, fontWeight: '500', color: '#44403C' }}>
                       Edit
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={handleDeleteReply}
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      backgroundColor: '#FDECEA',
-                      paddingHorizontal: 14,
-                      paddingVertical: 8,
-                      borderRadius: 99,
-                      gap: 5,
-                    }}
-                  >
-                    <Trash2 size={13} color="#C45C3E" />
-                    <Text style={{ fontSize: 13, fontWeight: '500', color: '#C45C3E' }}>
-                      Delete
                     </Text>
                   </Pressable>
                 </View>
