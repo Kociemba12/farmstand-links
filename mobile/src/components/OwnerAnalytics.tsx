@@ -174,7 +174,7 @@ function MetricExplainSheet({ visible, onClose, metricKey }: MetricExplainSheetP
         <Animated.View
           entering={SlideInUp.duration(300)}
           className="bg-white rounded-t-3xl"
-          style={{ maxHeight: '92%' }}
+          style={{ maxHeight: '92%', width: '100%' }}
           onStartShouldSetResponder={() => true}
         >
           {/* Handle */}
@@ -192,10 +192,10 @@ function MetricExplainSheet({ visible, onClose, metricKey }: MetricExplainSheetP
 
           {/* Scrollable content */}
           <ScrollView
-            style={{ flex: 1 }}
+            style={{ flexGrow: 0 }}
             showsVerticalScrollIndicator={true}
             bounces={false}
-            contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: insets.bottom + 60 }}
+            contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: insets.bottom + 48 }}
           >
             <View className="mb-4">
               <Text className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1.5">What it is</Text>
