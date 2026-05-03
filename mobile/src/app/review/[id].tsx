@@ -164,18 +164,24 @@ export default function ReviewDetailScreen() {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     console.log('[ReviewDetail] handleSaveEdit — userId:', user?.id);
     console.log('[ReviewDetail] handleSaveEdit — reviewId:', reviewId);
-    console.log('[ReviewDetail] handleSaveEdit — payload:', JSON.stringify({ review_id: reviewId, owner_response: editText.trim() }));
+    console.log('[ReviewDetail] handleSaveEdit — farmstandId:', farmstandId);
     try {
       await updateOwnerResponse(reviewId, editText.trim());
       setIsEditing(false);
       setEditText('');
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (error) {
-      console.error('[ReviewDetail] Failed to update reply — full error:', JSON.stringify(error));
-      const msg = error instanceof Error ? error.message : String(error);
-      const isPermission = msg.toLowerCase().includes('permission') || msg.toLowerCase().includes('own') || msg.toLowerCase().includes('unauthorized') || msg.toLowerCase().includes('forbidden');
+      const e = error as { message?: string; code?: string; details?: string; hint?: string };
+      console.error('[ReviewDetail] handleSaveEdit FAILED');
+      console.error('[ReviewDetail] error.message:', e.message ?? String(error));
+      console.error('[ReviewDetail] error.code:', e.code ?? 'none');
+      console.error('[ReviewDetail] error.details:', e.details ?? 'none');
+      console.error('[ReviewDetail] error.hint:', e.hint ?? 'none');
+      console.error('[ReviewDetail] reviewId:', reviewId, '| farmstandId:', farmstandId, '| userId:', user?.id ?? 'unknown');
+      const msg = e.message ?? String(error);
+      const isPermission = msg.toLowerCase().includes('permission') || msg.toLowerCase().includes('own') || msg.toLowerCase().includes('unauthorized') || msg.toLowerCase().includes('forbidden') || msg.toLowerCase().includes('not_authenticated');
       if (isPermission) {
-        Alert.alert('Permission Denied', "You don't have permission to reply to this review.");
+        Alert.alert('Permission Denied', "You don't have permission to edit this reply.");
       } else {
         Alert.alert('Failed to Update Reply', 'Reply failed to save. Please try again.');
       }

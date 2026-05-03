@@ -41,7 +41,7 @@ import { ProfileFarmstandSkeleton, ProfileAnalyticsSkeleton } from '@/components
 import { checkForPendingPremiumOnboarding, usePremiumOnboardingStore } from '@/lib/premium-onboarding-store';
 import { useSupportUnreadStore } from '@/lib/support-unread-store';
 import { useReviewsStore } from '@/lib/reviews-store';
-import { useReviewUnread, redDotStyle } from '@/lib/review-unread';
+
 import { registerPushTokenForCurrentUser } from '@/lib/push';
 import { Bell } from 'lucide-react-native';
 
@@ -54,16 +54,6 @@ const BACKEND_URL = (process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL ?? '').replace
 
 // Default farmstand hero image - rustic produce stand with warm tones
 const DEFAULT_FARMSTAND_HERO = 'https://images.unsplash.com/photo-1488459716781-31db52582fe9?w=800&q=80';
-
-function FarmstandUnreadDot({ farmstandId }: { farmstandId: string }) {
-  const hasUnread = useReviewUnread(farmstandId);
-  if (!hasUnread) return null;
-  return (
-    <View style={{ position: 'absolute', top: 12, right: 12, zIndex: 10 }}>
-      <View style={redDotStyle} />
-    </View>
-  );
-}
 
 // Account Tile Component (2-column grid)
 interface AccountTileProps {
@@ -1007,7 +997,7 @@ export default function ProfileScreen() {
                                 <ChevronRight size={20} color="#A8A29E" />
                               </View>
                             </View>
-                            <FarmstandUnreadDot farmstandId={farmstand.id} />
+
                           </Pressable>
 
                           {/* Premium status bar inside farmstand card */}

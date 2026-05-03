@@ -484,49 +484,31 @@ export const useReviewsStore = create<ReviewsState>((set, get) => ({
   updateOwnerResponse: async (reviewId: string, responseText: string) => {
     if (!isSupabaseConfigured()) return;
 
-    // Find farmId from cache
-    let reviewFarmId: string | null = null;
-    for (const [fId, reviews] of Object.entries(get().reviewsByFarm)) {
-      if (reviews.find((r) => r.id === reviewId)) { reviewFarmId = fId; break; }
-    }
-
     console.log('[Reviews:updateOwnerResponse] reviewId:', reviewId);
     console.log('[Reviews:updateOwnerResponse] reply text:', responseText);
 
-    const session = await getValidSession();
-    if (!session?.access_token) throw new Error('Not authenticated');
+    type RpcResult = { owner_response: string; owner_response_at: string };
+    const { data, error } = await supabase.rpc<RpcResult>('update_review_reply', {
+      p_review_id: reviewId,
+      p_reply_text: responseText,
+    });
 
-    const backendUrl = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
-    let resp: Response;
-    try {
-      resp = await fetch(`${backendUrl}/api/owner-response`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({ review_id: reviewId, farmstand_id: reviewFarmId ?? '', owner_response: responseText }),
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeoutId);
+    if (error) {
+      const e = error as { message?: string; code?: string; details?: string; hint?: string };
+      const msg = [
+        e.message ?? 'Unknown error',
+        e.code    ? `code=${e.code}`       : null,
+        e.details ? `details=${e.details}` : null,
+        e.hint    ? `hint=${e.hint}`       : null,
+      ].filter(Boolean).join(' | ');
+      console.error('[Reviews:updateOwnerResponse] RPC error:', msg);
+      throw new Error(msg);
     }
 
-    const rct2 = resp.headers.get('content-type') ?? '';
-    if (!rct2.includes('application/json')) {
-      console.log('[Reviews:updateOwnerResponse] non-JSON response (HTTP', resp.status, '), content-type:', rct2);
-      throw new Error(`Unexpected response from server (HTTP ${resp.status})`);
-    }
-    const result = await resp.json() as { success: boolean; error?: string; message?: string; owner_response?: string; owner_response_at?: string };
-    console.log('[Reviews:updateOwnerResponse] backend response status:', resp.status);
-    console.log('[Reviews:updateOwnerResponse] backend response body:', JSON.stringify(result));
+    console.log('[Reviews:updateOwnerResponse] RPC success:', JSON.stringify(data));
 
-    if (!resp.ok || !result.success) {
-      const errMsg = result.message ?? result.error ?? 'Failed to update reply';
-      throw new Error(errMsg);
-    }
+    const savedText = data?.owner_response ?? responseText;
+    const savedAt   = data?.owner_response_at ?? new Date().toISOString();
 
     set((state) => {
       const updated = { ...state.reviewsByFarm };
@@ -537,8 +519,8 @@ export const useReviewsStore = create<ReviewsState>((set, get) => ({
                 ...r,
                 response: {
                   ...r.response,
-                  text: result.owner_response!,
-                  date: result.owner_response_at ?? new Date().toISOString(),
+                  text:      savedText,
+                  date:      savedAt,
                   updatedAt: new Date().toISOString(),
                 },
               }

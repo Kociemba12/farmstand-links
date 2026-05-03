@@ -50,7 +50,7 @@ import { useBootstrapStore, selectUserFarmstands, selectAppReady, selectUserFarm
 import { useAuth } from '@/providers/AuthProvider';
 import { trackEvent } from '@/lib/track';
 import NetInfo from '@react-native-community/netinfo';
-import { useReviewUnread, markReviewsViewed, redDotStyle } from '@/lib/review-unread';
+import { markReviewsViewed } from '@/lib/review-unread';
 
 const fallbackHero = require('../../assets/images/farmstand-final-fallback.png') as number;
 
@@ -64,10 +64,9 @@ interface QuickActionProps {
   badge?: string;
   badgeColor?: string;
   locked?: boolean;
-  showDot?: boolean;
 }
 
-function QuickAction({ icon, label, sublabel, onPress, badge, badgeColor, locked, showDot }: QuickActionProps) {
+function QuickAction({ icon, label, sublabel, onPress, badge, badgeColor, locked }: QuickActionProps) {
   return (
     <Pressable
       onPress={onPress}
@@ -90,9 +89,7 @@ function QuickAction({ icon, label, sublabel, onPress, badge, badgeColor, locked
           </Text>
         </View>
       )}
-      {showDot && (
-        <View style={{ ...redDotStyle, marginRight: 6 }} />
-      )}
+
       {locked ? <Lock size={18} color="#9ca3af" /> : <ChevronRight size={18} color="#9ca3af" />}
     </Pressable>
   );
@@ -416,9 +413,6 @@ export default function MyFarmstandScreen() {
     // Default to first farmstand
     return userFarmstands[0];
   }, [userFarmstands, selectedFarmstandId]);
-
-  // Unread review indicator — true when farmstand has reviews newer than last viewed
-  const hasUnreadReviews = useReviewUnread(userFarmstand?.id);
 
   // Check for ALL pending claim requests for this user
   // SOURCE OF TRUTH: Supabase claim_requests table, with local store as fallback
@@ -1573,7 +1567,6 @@ export default function MyFarmstandScreen() {
               icon={<MessageSquare size={20} color="#2D5A3D" />}
               label="Manage Reviews"
               sublabel="Reply to customer feedback"
-              showDot={hasUnreadReviews}
               onPress={() => {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 trackEvent('manage_reviews_opened', { farmstand_id: currentFarmstand.id, farmstand_name: currentFarmstand.name });
