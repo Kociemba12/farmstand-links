@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
-import { View, Text, Pressable, Dimensions, TextInput, Alert, StyleSheet, FlatList, ActivityIndicator, Keyboard, useWindowDimensions } from 'react-native';
+import { View, Text, Pressable, Dimensions, TextInput, Alert, StyleSheet, FlatList, ActivityIndicator, Keyboard, useWindowDimensions, AppState } from 'react-native';
 import { Image } from 'expo-image';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,7 +20,7 @@ import { getFarmstandDisplayImage } from '@/lib/farmstand-image';
 
 const fallbackHero = require('../../assets/images/farmstand-final-fallback.png') as number;
 
-function MapFarmCardImage({ imageUri, style }: { imageUri?: string | null; style: object }) {
+const MapFarmCardImage = React.memo(function MapFarmCardImage({ imageUri, style }: { imageUri?: string | null; style: object }) {
   const [imgSource, setImgSource] = useState<{ uri: string } | number>(
     imageUri ? { uri: imageUri } : fallbackHero
   );
@@ -31,11 +31,11 @@ function MapFarmCardImage({ imageUri, style }: { imageUri?: string | null; style
       contentFit="cover"
       cachePolicy="memory-disk"
       recyclingKey={imageUri || 'fallback'}
-      transition={250}
+      transition={0}
       onError={() => setImgSource(fallbackHero)}
     />
   );
-}
+});
 
 import { farmstandMatchesCategory, CATEGORY_LABELS, CATEGORY_FILTER_KEYWORDS } from '@/lib/category-filter';
 import { SignInPromptModal } from '@/components/SignInPromptModal';
@@ -248,55 +248,94 @@ interface ExtendedFarmStand extends FarmStand {
   createdAt?: string | null;  // DB created_at — always different per farmstand, used as tiebreaker
 }
 
-// Helper to get hours status text
-const getHoursStatus = (hours: HoursSchedule | null | undefined, isOpen: boolean): { text: string; isOpenNow: boolean } => {
-  if (!hours) {
-    // No structured hours data — treat as closed for "Open Now" filter purposes
-    return { text: isOpen ? 'Hours vary' : 'Closed', isOpenNow: false };
-  }
-
-  const now = new Date();
-  const dayOfWeek = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][now.getDay()] as keyof Omit<HoursSchedule, 'timezone' | 'exceptions'>;
-  const todayHours = hours[dayOfWeek];
-
-  if (!todayHours || todayHours.closed || !todayHours.open || !todayHours.close) {
-    const days = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
-    for (let i = 1; i <= 7; i++) {
-      const nextDayIndex = (now.getDay() + i) % 7;
-      const nextDay = days[nextDayIndex] as keyof Omit<HoursSchedule, 'timezone' | 'exceptions'>;
-      const nextDayHours = hours[nextDay];
-      if (!nextDayHours.closed && nextDayHours.open) {
-        const dayName = i === 1 ? 'Tomorrow' : days[nextDayIndex].charAt(0).toUpperCase() + days[nextDayIndex].slice(1);
-        return { text: `Opens ${dayName}`, isOpenNow: false };
-      }
-    }
-    return { text: 'Closed', isOpenNow: false };
-  }
-
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
-  const [openHour, openMin] = todayHours.open.split(':').map(Number);
-  const [closeHour, closeMin] = todayHours.close.split(':').map(Number);
-  const openMinutes = openHour * 60 + openMin;
-  const closeMinutes = closeHour * 60 + closeMin;
-
-  const formatTime = (time: string): string => {
-    const [hour, minute] = time.split(':').map(Number);
-    const period = hour >= 12 ? 'PM' : 'AM';
-    const displayHour = hour % 12 || 12;
-    return minute === 0 ? `${displayHour} ${period}` : `${displayHour}:${minute.toString().padStart(2, '0')} ${period}`;
-  };
-
-  if (currentMinutes < openMinutes) {
-    return { text: `Opens ${formatTime(todayHours.open)}`, isOpenNow: false };
-  } else if (currentMinutes < closeMinutes) {
-    return { text: `Open until ${formatTime(todayHours.close)}`, isOpenNow: true };
-  } else {
-    return { text: 'Closed', isOpenNow: false };
-  }
-};
-
 // Bottom sheet state enum - TWO STATES ONLY
 type SheetState = 'collapsed' | 'expanded';
+
+type FarmCardProps = {
+  farm: ExtendedFarmStand;
+  isSingleCard: boolean;
+  isSelected: boolean;
+  isFavorite: boolean;
+  distanceFromAnchor: string | null;
+  onPress: (farm: ExtendedFarmStand) => void;
+  onFavoritePress: (farmId: string) => void;
+  isTablet: boolean;
+};
+
+const FarmCard = React.memo(function FarmCard({
+  farm,
+  isSingleCard,
+  isSelected,
+  isFavorite,
+  distanceFromAnchor,
+  onPress,
+  onFavoritePress,
+  isTablet,
+}: FarmCardProps) {
+  const cardWidth = isSingleCard ? SINGLE_CARD_WIDTH : CARD_WIDTH;
+  const imageHeight = isSingleCard ? SINGLE_CARD_IMAGE_HEIGHT : IMAGE_HEIGHT;
+  const cardHeight = isSingleCard ? SINGLE_CARD_HEIGHT : CARD_HEIGHT;
+  const opStatus = farm.operatingStatus ?? 'open';
+  const badgeConfig: Record<string, { bg: string; label: string }> = {
+    open:               { bg: '#2D5A3D',            label: 'Open Now' },
+    temporarily_closed: { bg: 'rgba(180,83,9,0.9)', label: 'Temp. Closed' },
+    seasonal:           { bg: 'rgba(29,78,216,0.9)', label: 'Seasonal' },
+    permanently_closed: { bg: 'rgba(185,28,28,0.9)', label: 'Perm. Closed' },
+  };
+  const cfg = badgeConfig[opStatus] ?? badgeConfig['open'];
+  return (
+    <Pressable
+      onPress={() => onPress(farm)}
+      style={[
+        styles.card,
+        { width: cardWidth, height: cardHeight },
+        isSelected && styles.cardSelected,
+        isSingleCard && styles.singleCard,
+        isTablet && { alignSelf: 'center' as const },
+      ]}
+    >
+      <View style={[styles.cardImageContainer, { height: imageHeight }]}>
+        <MapFarmCardImage imageUri={farm.image} style={styles.cardImage} />
+        <Pressable
+          onPress={(e) => { e.stopPropagation(); onFavoritePress(farm.id); }}
+          style={styles.heartButton}
+        >
+          <Heart
+            size={22}
+            color={isFavorite ? '#C94A4A' : '#FFFFFF'}
+            fill={isFavorite ? '#C94A4A' : 'transparent'}
+            strokeWidth={2}
+          />
+        </Pressable>
+        <View style={[styles.statusBadge, { backgroundColor: cfg.bg }]}>
+          <Text style={styles.statusBadgeText}>{cfg.label}</Text>
+        </View>
+        {distanceFromAnchor !== null && (
+          <View style={styles.distancePill}>
+            <Navigation size={12} color="#2D5A3D" />
+            <Text style={styles.distanceText}>{distanceFromAnchor} mi</Text>
+          </View>
+        )}
+      </View>
+      <View style={styles.cardContent}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Text numberOfLines={1} style={[styles.cardTitle, isSingleCard && styles.singleCardTitle, { flexShrink: 1 }]}>
+            {farm.name}
+          </Text>
+          {farm.goldVerified && <GoldVerifiedRibbon size={14} />}
+        </View>
+        {isPremiumFarmstand(farm.premiumStatus) && (
+          <View style={{ marginTop: 4 }}>
+            <PremiumBadge size="small" />
+          </View>
+        )}
+        <Text numberOfLines={1} style={styles.cardSubtitle}>
+          {farm.products.slice(0, 4).join(' • ')}
+        </Text>
+      </View>
+    </Pressable>
+  );
+});
 
 export default function MapScreen() {
   const router = useRouter();
@@ -356,6 +395,14 @@ export default function MapScreen() {
   const navOpenNowSetRef = useRef(false);
 
   const [visibleRegion, setVisibleRegion] = useState<Region>(OREGON_REGION);
+
+  // Map remount key — incremented on foreground resume after long background to force tile reload.
+  const [mapInstanceKey, setMapInstanceKey] = useState(0);
+  // Timestamp (ms) when app went to background; null while app is active.
+  const backgroundedAtRef = useRef<number | null>(null);
+  // Watchdog: if onMapReady hasn't fired within 10 s after a remount, log a failure.
+  const mapStyleLoadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [_userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [isLocating, setIsLocating] = useState(false);
   const [mapHeading, setMapHeading] = useState(0);
@@ -532,6 +579,15 @@ export default function MapScreen() {
   const toggleFavorite = useFavoritesStore((s) => s.toggleFavorite);
   const favorites = useFavoritesStore((s) => s.favorites);
 
+  const handleFavoritePress = useCallback((farmId: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (isGuest()) {
+      setShowGuestPrompt(true);
+      return;
+    }
+    toggleFavorite(farmId);
+  }, [isGuest, toggleFavorite]);
+
   // Get farmstands from admin store
   const adminFarmstands = useAdminStore((s) => s.allFarmstands);
   const loadAdminData = useAdminStore((s) => s.loadAdminData);
@@ -589,6 +645,55 @@ export default function MapScreen() {
       if (__DEV__) console.log('[MapContext] nav-applied openNow reset to false');
     }
   }, [clearSearch, params.searchNonce, params.collectionNonce, params.openNowNonce, params.collectionLabel, params.search, setRadiusMiles, setOpenNow]);
+
+  // ── AppState: force tile reload after long background ─────────────────────
+  // Apple Maps (react-native-maps) sometimes fails to reload tiles after extended
+  // background, leaving a blank/white map. We detect the background→active transition
+  // and, if the app was backgrounded for > 30 seconds, remount the MapView by
+  // incrementing mapInstanceKey. The saved visibleRegion is passed as initialRegion
+  // so the camera position is preserved on remount.
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        const backgroundedAt = backgroundedAtRef.current;
+        const backgroundDuration = backgroundedAt ? Date.now() - backgroundedAt : 0;
+        console.log('[Map] app returned active');
+        backgroundedAtRef.current = null;
+
+        if (backgroundedAt && backgroundDuration > 30_000) {
+          console.log('[Map] refreshing map style (backgrounded', Math.round(backgroundDuration / 1000), 's)');
+          // Clear any stale watchdog from a previous remount
+          if (mapStyleLoadTimerRef.current !== null) {
+            clearTimeout(mapStyleLoadTimerRef.current);
+          }
+          // 500 ms delay lets the UI settle before the native layer reinitialises
+          setTimeout(() => {
+            // Set watchdog: if onMapReady has not fired within 10 s, log failure
+            mapStyleLoadTimerRef.current = setTimeout(() => {
+              mapStyleLoadTimerRef.current = null;
+              console.log('[Map] style load failed — tiles did not reload within 10 s');
+            }, 10_000);
+            setMapInstanceKey((k) => k + 1);
+          }, 500);
+        }
+      } else if (nextState === 'background') {
+        backgroundedAtRef.current = Date.now();
+      }
+    });
+    return () => {
+      subscription.remove();
+      if (mapStyleLoadTimerRef.current !== null) clearTimeout(mapStyleLoadTimerRef.current);
+    };
+  }, []);
+
+  // Fires when the (potentially fresh) MapView has loaded its tiles.
+  const handleMapReady = useCallback(() => {
+    console.log('[Map] style loaded');
+    if (mapStyleLoadTimerRef.current !== null) {
+      clearTimeout(mapStyleLoadTimerRef.current);
+      mapStyleLoadTimerRef.current = null;
+    }
+  }, []);
 
   // Load admin data on mount and when returning to this screen
   useFocusEffect(
@@ -1353,6 +1458,10 @@ export default function MapScreen() {
   // Based on pinnedFarmstand — only set/cleared by explicit user action, never by effects/memos
   const isPinSelected = Boolean(pinnedFarmstand);
 
+  const trayRenderData = useMemo((): ExtendedFarmStand[] => {
+    return pinnedFarmstand ? [pinnedFarmstand] : [...sortedFarmstands];
+  }, [pinnedFarmstand, sortedFarmstands]);
+
   // Pins to show on map — always derived from advancedFilteredFarms so panel filters
   // (rating, openNow, price, categories, etc.) remove non-matching pins immediately.
   // When no filters are active, advancedFilteredFarms ≡ baseFarmstands so the
@@ -2049,123 +2158,37 @@ export default function MapScreen() {
     mapRef.current?.animateToRegion(newRegion, 200);
   }, [mapCenter.latitude, mapCenter.longitude]);
 
-  // Render big vertical card
-  // isSingleCard: true when only 1 farmstand is displayed (uses larger dimensions)
-  const renderBigCard = useCallback((farm: ExtendedFarmStand, isSingleCard: boolean = false, rank?: number) => {
-    const hoursStatus = getHoursStatus(farm.hoursData, farm.isOpen);
-    const isSelected = selectedFarmId === farm.id;
-    const isFavorite = favorites.has(farm.id);
+  const keyExtractor = useCallback((item: ExtendedFarmStand) => item.id, []);
 
-    const handleHeartPress = (e: { stopPropagation: () => void }) => {
-      e.stopPropagation();
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  const flatListExtraData = useMemo(
+    () => ({ selectedFarmId, favorites, filterSortBy }),
+    [selectedFarmId, favorites, filterSortBy]
+  );
 
-      // Check if user is a guest
-      if (isGuest()) {
-        setShowGuestPrompt(true);
-        return;
-      }
-
-      toggleFavorite(farm.id);
-    };
-
-    // Use different dimensions for single card display
-    const cardWidth = isSingleCard ? SINGLE_CARD_WIDTH : CARD_WIDTH;
-    const imageHeight = isSingleCard ? SINGLE_CARD_IMAGE_HEIGHT : IMAGE_HEIGHT;
-    const cardHeight = isSingleCard ? SINGLE_CARD_HEIGHT : CARD_HEIGHT;
-
+  const renderItem = useCallback(({ item, index }: { item: ExtendedFarmStand; index: number }) => {
+    const isSingle = isPinSelected || trayRenderData.length === 1;
     return (
-      <Pressable
-        key={farm.id}
-        onPress={() => handleFarmCardPress(farm)}
-        style={[
-          styles.card,
-          { width: cardWidth, height: cardHeight },
-          isSelected && styles.cardSelected,
-          isSingleCard && styles.singleCard,
-          isTablet && { alignSelf: 'center' as const },
-        ]}
-      >
-        {/* Image Section */}
-        <View style={[styles.cardImageContainer, { height: imageHeight }]}>
-          <MapFarmCardImage
-            imageUri={farm.image}
-            style={styles.cardImage}
-          />
-
-          {/* Heart/Save Button */}
-          <Pressable
-            onPress={handleHeartPress}
-            style={styles.heartButton}
-          >
-            <Heart
-              size={22}
-              color={isFavorite ? '#C94A4A' : '#FFFFFF'}
-              fill={isFavorite ? '#C94A4A' : 'transparent'}
-              strokeWidth={2}
-            />
-          </Pressable>
-
-          {/* Open/Closed Badge — driven by operating_status */}
-          {(() => {
-            const opStatus = farm.operatingStatus ?? 'open';
-            const badgeConfig: Record<string, { bg: string; label: string }> = {
-              open:               { bg: '#2D5A3D',            label: 'Open Now' },
-              temporarily_closed: { bg: 'rgba(180,83,9,0.9)', label: 'Temp. Closed' },
-              seasonal:           { bg: 'rgba(29,78,216,0.9)',label: 'Seasonal' },
-              permanently_closed: { bg: 'rgba(185,28,28,0.9)',label: 'Perm. Closed' },
-            };
-            const cfg = badgeConfig[opStatus] ?? badgeConfig['open'];
-            return (
-              <View style={[styles.statusBadge, { backgroundColor: cfg.bg }]}>
-                <Text style={styles.statusBadgeText}>{cfg.label}</Text>
-              </View>
-            );
-          })()}
-
-          {/* Distance Pill - only show if anchor location is set */}
-          {getDistanceFromAnchor(farm) !== null && (
-            <View style={styles.distancePill}>
-              <Navigation size={12} color="#2D5A3D" />
-              <Text style={styles.distanceText}>
-                {getDistanceFromAnchor(farm)} mi
-              </Text>
-            </View>
-          )}
-        </View>
-
-        {/* Content Section */}
-        <View style={styles.cardContent}>
-          {/* Name */}
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <Text numberOfLines={1} style={[styles.cardTitle, isSingleCard && styles.singleCardTitle, { flexShrink: 1 }]}>
-              {farm.name}
-            </Text>
-            {farm.goldVerified && <GoldVerifiedRibbon size={14} />}
-          </View>
-          {isPremiumFarmstand(farm.premiumStatus) && (
-            <View style={{ marginTop: 4 }}>
-              <PremiumBadge size="small" />
-            </View>
-          )}
-
-          {/* Categories/Products */}
-          <Text numberOfLines={1} style={styles.cardSubtitle}>
-            {farm.products.slice(0, 4).join(' • ')}
-          </Text>
-
-        </View>
-      </Pressable>
+      <FarmCard
+        farm={item}
+        isSingleCard={isSingle}
+        isSelected={selectedFarmId === item.id}
+        isFavorite={favorites.has(item.id)}
+        distanceFromAnchor={getDistanceFromAnchor(item)}
+        onPress={handleFarmCardPress}
+        onFavoritePress={handleFavoritePress}
+        isTablet={isTablet}
+      />
     );
-  }, [selectedFarmId, handleFarmCardPress, getDistanceFromAnchor, favorites, isGuest, toggleFavorite, isTablet]);
+  }, [isPinSelected, trayRenderData.length, selectedFarmId, favorites, getDistanceFromAnchor, handleFarmCardPress, handleFavoritePress, isTablet]);
 
   return (
     <View style={styles.container}>
       {/* Map */}
       <MapView
+        key={mapInstanceKey}
         ref={mapRef}
         style={StyleSheet.absoluteFillObject}
-        initialRegion={OREGON_REGION}
+        initialRegion={visibleRegion}
         mapType={mapType}
         showsUserLocation
         showsMyLocationButton={false}
@@ -2174,6 +2197,7 @@ export default function MapScreen() {
         onPress={handleMapPress}
         onRegionChange={handleRegionChange}
         onRegionChangeComplete={handleRegionChangeComplete}
+        onMapReady={handleMapReady}
       >
         {/* Render pins from stablePins - debounced to avoid native Marker churn on rapid chip taps */}
         {stablePins.map((farm: ExtendedFarmStand) => {
@@ -2578,36 +2602,26 @@ export default function MapScreen() {
         {sheetState === 'expanded' && (isPinSelected || visibleFarmstands.length > 0) ? (
           <GestureDetector gesture={contentPanGesture}>
             <View style={styles.scrollContainer}>
-              {(() => {
-                // SINGLE SOURCE OF TRUTH: sortedFarmstands is the final sorted array.
-                const trayRenderData: ExtendedFarmStand[] = pinnedFarmstand
-                  ? [pinnedFarmstand]
-                  : [...sortedFarmstands];
-
-                return (
-                  <>
-                    <FlatList
-                      key={`tray-${filterSortBy}`}
-                      extraData={filterSortBy}
-                      ref={flatListRef}
-                      data={trayRenderData}
-                      keyExtractor={(item) => item.id}
-                      renderItem={({ item, index }) => renderBigCard(item, isPinSelected || trayRenderData.length === 1, isPinSelected ? undefined : index + 1)}
-                      contentContainerStyle={styles.sheetContent}
-                      showsVerticalScrollIndicator={!isPinSelected && trayRenderData.length > 1}
-                      scrollEnabled={!isPinSelected && trayRenderData.length > 1}
-                      onScroll={(e) => { scrollOffset.value = e.nativeEvent.contentOffset.y; }}
-                      scrollEventThrottle={16}
-                      bounces={!isPinSelected && trayRenderData.length > 1}
-                      getItemLayout={(_, index) => ({
-                        length: CARD_HEIGHT + CARD_SPACING,
-                        offset: (CARD_HEIGHT + CARD_SPACING) * index,
-                        index,
-                      })}
-                    />
-                  </>
-                );
-              })()}
+              <FlatList
+                key={`tray-${filterSortBy}`}
+                extraData={flatListExtraData}
+                ref={flatListRef}
+                data={trayRenderData}
+                keyExtractor={keyExtractor}
+                renderItem={renderItem}
+                contentContainerStyle={styles.sheetContent}
+                showsVerticalScrollIndicator={!isPinSelected && trayRenderData.length > 1}
+                scrollEnabled={!isPinSelected && trayRenderData.length > 1}
+                onScroll={(e) => { scrollOffset.value = e.nativeEvent.contentOffset.y; }}
+                scrollEventThrottle={16}
+                bounces={!isPinSelected && trayRenderData.length > 1}
+                initialNumToRender={4}
+                maxToRenderPerBatch={4}
+                windowSize={5}
+                updateCellsBatchingPeriod={50}
+                removeClippedSubviews={true}
+                keyboardShouldPersistTaps="handled"
+              />
             </View>
           </GestureDetector>
         ) : null}

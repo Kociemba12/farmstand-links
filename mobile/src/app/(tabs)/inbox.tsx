@@ -35,30 +35,6 @@ const CREAM = '#FDF8F3';
 const SAND = '#EDE8E0';
 const BACKEND_URL = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
 
-// ─── Raw Supabase conversation row ────────────────────────────────────────────
-interface ConversationRow {
-  id: string;
-  farmstand_id: string;
-  customer_id: string;
-  owner_id: string;
-  last_message_text: string | null;
-  last_message_at: string | null;
-  customer_unread_count: number | null;
-  owner_unread_count: number | null;
-  created_at: string;
-  updated_at: string;
-  deleted_by_owner_at?: string | null;
-  deleted_by_customer_at?: string | null;
-  customer_name?: string | null;
-  customer_avatar_url?: string | null;
-  farmstands?: {
-    name?: string | null;
-    photos?: string[] | null;
-    photo_url?: string | null;
-    deleted_at?: string | null;
-  } | null;
-}
-
 // ─── Conversation type ────────────────────────────────────────────────────────
 interface Conversation {
   farmstand_id: string;
@@ -368,7 +344,7 @@ function SwipeableThreadListItem({
         </Animated.View>
 
         <GestureDetector gesture={composedGesture}>
-          <Animated.View style={[{ width: '100%', backgroundColor: hasUnread ? 'rgba(74,124,89,0.04)' : '#FFFFFF' }, rowStyle]}>
+          <Animated.View style={[{ width: '100%', backgroundColor: hasUnread ? 'rgba(239,68,68,0.05)' : '#FFFFFF' }, rowStyle]}>
             <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F5F0EA' }}>
               {(() => {
                 const display = resolveConversationDisplay({
@@ -391,9 +367,7 @@ function SwipeableThreadListItem({
                         )}
                       </View>
                       {hasUnread && (
-                        <View style={{ position: 'absolute', top: -1, right: -1, width: 14, height: 14, borderRadius: 7, backgroundColor: FOREST, borderWidth: 2, borderColor: '#fff', alignItems: 'center', justifyContent: 'center' }}>
-                          {unreadCount <= 9 && <Text style={{ color: '#fff', fontSize: 8, fontWeight: '800' }}>{unreadCount}</Text>}
-                        </View>
+                        <View style={{ position: 'absolute', top: 0, right: 0, width: 12, height: 12, borderRadius: 6, backgroundColor: '#EF4444', borderWidth: 2, borderColor: '#fff' }} />
                       )}
                     </View>
 
@@ -402,13 +376,20 @@ function SwipeableThreadListItem({
                         <Text style={{ fontSize: 15, fontWeight: hasUnread ? '700' : '500', color: hasUnread ? '#1C1917' : '#44403C', flex: 1 }} numberOfLines={1}>
                           {display.displayName}
                         </Text>
-                        <Text style={{ fontSize: 12, color: hasUnread ? FOREST : '#A8A29E', fontWeight: hasUnread ? '600' : '400', marginLeft: 8 }}>
+                        <Text style={{ fontSize: 12, color: '#A8A29E', marginLeft: 8 }}>
                           {formatTime(conversation.last_message_at)}
                         </Text>
                       </View>
-                      <Text style={{ fontSize: 13, marginTop: 3, color: hasUnread ? '#57534E' : '#A8A29E', fontWeight: hasUnread ? '500' : '400' }} numberOfLines={1}>
-                        {conversation.last_message_text || 'No messages yet'}
-                      </Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 3 }}>
+                        <Text style={{ fontSize: 13, flex: 1, color: hasUnread ? '#44403C' : '#A8A29E', fontWeight: hasUnread ? '500' : '400' }} numberOfLines={1}>
+                          {conversation.last_message_text || 'No messages yet'}
+                        </Text>
+                        {hasUnread && (
+                          <View style={{ marginLeft: 8, backgroundColor: '#EF4444', borderRadius: 10, minWidth: 20, height: 20, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5 }}>
+                            <Text style={{ color: '#fff', fontSize: 11, fontWeight: '800' }}>{unreadCount > 9 ? '9+' : unreadCount}</Text>
+                          </View>
+                        )}
+                      </View>
                       {conversation.farmstand_deleted && (
                         <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 4 }}>
                           <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: '#B45309' }} />
@@ -634,126 +615,53 @@ export default function InboxScreen() {
   }, []);
 
   const loadConversations = useCallback(async (silent = false) => {
-    if (!user?.id) return;
+    if (!user?.id || !BACKEND_URL) return;
     const session = await getValidSession();
     if (!session?.access_token) return;
     if (!silent) setConvLoading(true);
     try {
-      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
-      const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
-      if (__DEV__) console.log('[Inbox] Loading conversations from public.conversations for user:', user.id);
+      if (__DEV__) console.log('[Inbox] Loading conversations from backend for user:', user.id);
 
-      const convUrl = new URL(`${supabaseUrl}/rest/v1/conversations`);
-      convUrl.searchParams.set('or', `(customer_id.eq.${user.id},owner_id.eq.${user.id})`);
-      convUrl.searchParams.set('order', 'last_message_at.desc.nullslast,updated_at.desc');
-      convUrl.searchParams.set('select', '*,farmstands(name,photos,photo_url,deleted_at)');
-
-      const res = await fetch(convUrl.toString(), {
-        headers: {
-          apikey: supabaseAnonKey,
-          Authorization: `Bearer ${session.access_token}`,
-        },
+      // Use the backend /api/messages/inbox endpoint — it computes per-conversation
+      // unread_count from message_reads.db, the same source as the global badge.
+      // This is the only reliable source; conversations.owner_unread_count is never incremented.
+      const res = await fetch(`${BACKEND_URL}/api/messages/inbox`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
       });
+
       if (res.ok) {
-        const rawRows = await res.json() as ConversationRow[];
-        console.log('[InboxLoad] loaded', rawRows.length, 'conversations from server');
+        type BackendConv = {
+          farmstand_id: string;
+          other_user_id: string;
+          last_message_text: string | null;
+          last_message_at: string | null;
+          farmstand_name?: string;
+          farmstand_photo_url?: string | null;
+          farmstand_deleted?: boolean;
+          other_user_name?: string | null;
+          other_user_avatar_url?: string | null;
+          viewer_is_owner: boolean;
+          unread_count: number;
+        };
+        const data = await res.json() as { conversations?: BackendConv[] };
+        const rawConvs = data.conversations ?? [];
+        console.log('[InboxLoad] loaded', rawConvs.length, 'conversations from server');
 
-        // Filter out rows soft-deleted by this user. Auto-unhide if a new message
-        // arrived after the deletion timestamp (matches backend auto-unhide behavior).
-        const rows = rawRows.filter(row => {
-          const isOwner = row.owner_id === user!.id;
-          const deletedAt = isOwner ? (row.deleted_by_owner_at ?? null) : (row.deleted_by_customer_at ?? null);
-          if (!deletedAt) return true;
-          // Auto-unhide: new message arrived after user deleted the thread
-          if (row.last_message_at && row.last_message_at > deletedAt) {
-            console.log(`[InboxLoad] auto-unhide: new message after soft-delete — clearing column for conversation id=${row.id}`);
-            const patchCol = isOwner ? 'deleted_by_owner_at' : 'deleted_by_customer_at';
-            const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
-            fetch(`${supabaseUrl}/rest/v1/conversations?id=eq.${row.id}`, {
-              method: 'PATCH',
-              headers: {
-                apikey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '',
-                Authorization: `Bearer ${session.access_token}`,
-                'Content-Type': 'application/json',
-                Prefer: 'return=minimal',
-              },
-              body: JSON.stringify({ [patchCol]: null }),
-            }).catch(() => {});
-            return true;
-          }
-          console.log(`[InboxLoad] filtering out soft-deleted conversation id=${row.id} role=${isOwner ? 'owner' : 'customer'} deletedAt=${deletedAt}`);
-          return false;
-        });
-        console.log('[InboxLoad] after server soft-delete filter:', rows.length, '(filtered out', rawRows.length - rows.length, 'soft-deleted by user)');
+        const convs: Conversation[] = rawConvs.map(row => ({
+          farmstand_id: row.farmstand_id,
+          other_user_id: row.other_user_id,
+          last_message_text: row.last_message_text ?? null,
+          last_message_at: row.last_message_at ?? null,
+          farmstand_name: row.farmstand_name,
+          farmstand_photo_url: row.farmstand_photo_url ?? null,
+          farmstand_deleted: row.farmstand_deleted ?? false,
+          other_user_name: row.other_user_name ?? undefined,
+          other_user_avatar_url: row.other_user_avatar_url ?? undefined,
+          viewer_is_owner: row.viewer_is_owner,
+          unread_count: row.unread_count,
+        }));
 
-        const convs: Conversation[] = rows.map(row => {
-          const viewerIsOwner = row.owner_id === user.id;
-          const otherUserId = viewerIsOwner ? row.customer_id : row.owner_id;
-          const unreadCount = viewerIsOwner
-            ? (row.owner_unread_count ?? 0)
-            : (row.customer_unread_count ?? 0);
-          const fs = row.farmstands;
-          const farmstandPhoto = fs?.photos?.[0] ?? fs?.photo_url ?? null;
-          return {
-            farmstand_id: row.farmstand_id,
-            other_user_id: otherUserId,
-            last_message_text: row.last_message_text,
-            last_message_at: row.last_message_at,
-            farmstand_name: fs?.name ?? undefined,
-            farmstand_photo_url: farmstandPhoto,
-            farmstand_deleted: !!(fs?.deleted_at),
-            unread_count: unreadCount,
-            viewer_is_owner: viewerIsOwner,
-            // Populate from customer snapshot stored on the conversation row
-            other_user_name: (viewerIsOwner && row.customer_name) ? row.customer_name : undefined,
-            other_user_avatar_url: (viewerIsOwner && row.customer_avatar_url) ? row.customer_avatar_url : undefined,
-          };
-        });
-
-        // Batch-fetch profiles as a fallback for owner-side conversations that don't
-        // yet have a customer_name snapshot on the conversation row (pre-snapshot conversations).
-        const ownerSideIds = [
-          ...new Set(
-            convs.filter(c => c.viewer_is_owner && !c.other_user_name).map(c => c.other_user_id)
-          ),
-        ];
-        if (ownerSideIds.length > 0) {
-          try {
-            const profilesUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
-            profilesUrl.searchParams.set('uid', `in.(${ownerSideIds.join(',')})`);
-            profilesUrl.searchParams.set('select', 'uid,full_name,avatar_url');
-            const profilesRes = await fetch(profilesUrl.toString(), {
-              headers: {
-                apikey: supabaseAnonKey,
-                Authorization: `Bearer ${session.access_token}`,
-              },
-            });
-            if (profilesRes.ok) {
-              const profileRows = await profilesRes.json() as { uid: string; full_name: string | null; avatar_url: string | null }[];
-              if (__DEV__) console.log('[InboxProfiles] loaded', profileRows.length, 'customer profile(s) for', ownerSideIds.length, 'owner-side conversations');
-              const profileMap = new Map(profileRows.map(p => [p.uid, p]));
-              for (const conv of convs) {
-                if (!conv.viewer_is_owner) continue;
-                const profile = profileMap.get(conv.other_user_id);
-                if (profile) {
-                  conv.other_user_name = profile.full_name ?? undefined;
-                  conv.other_user_avatar_url = profile.avatar_url ?? undefined;
-                  if (__DEV__) console.log('[InboxProfiles] customerId:', conv.other_user_id, '→ name:', profile.full_name ?? '(null)', '| hasAvatar:', !!profile.avatar_url);
-                } else {
-                  if (__DEV__) console.log('[InboxProfiles] no profile found for customerId:', conv.other_user_id);
-                }
-              }
-            } else {
-              if (__DEV__) console.log('[InboxProfiles] profiles fetch HTTP error:', profilesRes.status);
-            }
-          } catch (profileErr) {
-            if (__DEV__) console.log('[InboxProfiles] profiles fetch exception (non-fatal):', profileErr instanceof Error ? profileErr.message : String(profileErr));
-          }
-        }
-
-        // Guard against AsyncStorage race: if dismissed data hasn't been loaded yet
-        // (loadConversations fired before the useEffect that reads AsyncStorage resolved),
-        // load it inline now so deleted threads are correctly filtered on this first render.
+        // Guard against AsyncStorage race: load dismissed keys if not yet resolved
         if (!dismissedLoadedRef.current && dismissedStorageKeyRef.current) {
           try {
             const raw = await AsyncStorage.getItem(dismissedStorageKeyRef.current);
@@ -771,9 +679,7 @@ export default function InboxScreen() {
         // the latest dismissed set. This is the fix for deleted-thread repopulation.
         const activeDismissedData = new Map(dismissedConvDataRef.current);
 
-        // If a previously-dismissed thread reappears from the backend with a
-        // last_message_at NEWER than our dismissal timestamp, a new message arrived
-        // after we hid it — clear the local suppression so the thread shows again.
+        // Auto-reveal dismissed threads if a new message arrived after dismissal
         const keysToReveal: string[] = [];
         for (const conv of convs) {
           const key = `${conv.farmstand_id}__${conv.other_user_id}`;
@@ -789,7 +695,7 @@ export default function InboxScreen() {
           if (storageKey) {
             AsyncStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(activeDismissedData))).catch(() => {});
           }
-          console.log(`[Inbox][DismissedKeys] auto-revealed ${keysToReveal.length} key(s) — new messages after dismissal: ${keysToReveal.join(', ')}`);
+          console.log(`[Inbox][DismissedKeys] auto-revealed ${keysToReveal.length} key(s): ${keysToReveal.join(', ')}`);
         }
 
         const beforeFilter = convs.length;
@@ -802,24 +708,20 @@ export default function InboxScreen() {
             const key = `${c.farmstand_id}__${c.other_user_id}`;
             const readAt = recentlyReadRef.current.get(key);
             if (readAt !== undefined) {
-              if (now - readAt < 10_000) {
-                return { ...c, unread_count: 0 };
-              }
-              // Guard expired — drop the entry so it doesn't persist forever
+              if (now - readAt < 10_000) return { ...c, unread_count: 0 };
               recentlyReadRef.current.delete(key);
             }
             return c;
           });
-        console.log(`[InboxLoad] filtered hidden/deleted conversations: showing ${filtered.length}/${beforeFilter} (skipped ${beforeFilter - filtered.length} locally dismissed)`);
+        console.log(`[InboxLoad] filtered: showing ${filtered.length}/${beforeFilter} (skipped ${beforeFilter - filtered.length} locally dismissed)`);
         setConversations(filtered);
-        // Fallback: if inbox has no visible threads, the badge must be 0.
         if (filtered.length === 0) {
           console.log('[Inbox] 0 conversations visible after filter — forcing badge to 0');
           setTotalUnreadMessages(0);
         }
       } else {
         const errText = await res.text();
-        if (__DEV__) console.log('[Inbox] conversations fetch error:', res.status, errText.slice(0, 200));
+        if (__DEV__) console.log('[Inbox] backend inbox fetch error:', res.status, errText.slice(0, 200));
       }
     } catch (err) {
       if (__DEV__) console.log('[Inbox] conversations fetch exception:', err instanceof Error ? err.message : String(err));
@@ -829,6 +731,19 @@ export default function InboxScreen() {
     // Deps: only user?.id and setTotalUnreadMessages. dismissedConvData and dismissedStorageKey
     // are intentionally read from refs (not closure) so stale captures always see current state.
   }, [user?.id, setTotalUnreadMessages]);
+
+  // Diagnostic: log per-row unread status whenever conversations or global badge updates.
+  useEffect(() => {
+    console.log('[InboxUnread] global unread count:', totalUnreadMessages);
+    for (const conv of conversations) {
+      const convId = `${conv.farmstand_id}__${conv.other_user_id}`;
+      const unreadCount = conv.unread_count ?? 0;
+      const hasUnread = unreadCount > 0;
+      console.log(`[InboxUnread] row conversation id: ${convId}`);
+      console.log(`[InboxUnread] row unread count: ${unreadCount}`);
+      console.log(`[InboxUnread] row hasUnread: ${hasUnread}`);
+    }
+  }, [conversations, totalUnreadMessages]);
 
   // Load both on focus — also refresh badge count so it stays accurate
   useFocusEffect(

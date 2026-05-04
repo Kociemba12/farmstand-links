@@ -580,58 +580,77 @@ export default function ChatScreen() {
     })();
   }, [resolvedOtherUserId]);
 
-  // Fetch customer name/avatar from the conversation snapshot when nav params don't
-  // include them — this happens when opening from a push notification (the push payload
-  // carries farmstand_id + other_user_id but not the display name).
-  // Skipped when otherUserName is already set (Inbox → thread path already has the name).
+  // ── Conversation-snapshot hydration (push notification path) ────────────────
+  // Fires when actualThreadId is a conversation UUID — this is set by navigateToConversation
+  // using the conversationId from the push payload. Does NOT fire for the Inbox path:
+  // the Inbox tap passes conversationId=undefined → threadId='new' → actualThreadId=null.
+  //
+  // Fetches the conversation row directly by primary key (most reliable) and joins the
+  // farmstand so both owner-side and customer-side headers can be hydrated in one round-trip.
   useEffect(() => {
-    if (!isDirectMode || !farmstandId || !otherUserId || !user?.id) return;
-    if (otherUserName) return; // Inbox path: name already in nav params — skip
-    if (!isSupabaseConfigured()) return;
+    if (!actualThreadId || !user?.id || !isSupabaseConfigured()) return;
+    if (__DEV__) console.log('[ThreadHeader] route params — threadId:', threadId, '| farmstandId:', farmstandId ?? '(none)', '| otherUserId:', otherUserId ?? '(none)', '| otherUserName:', otherUserName ?? '(none)');
     (async () => {
       const session = await getValidSession();
       if (!session?.access_token) return;
       const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
       const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
       try {
-        if (__DEV__) console.log('[ThreadHeader] loading conversation snapshot — farmstandId:', farmstandId, 'otherUserId:', otherUserId);
-        // OR filter covers both orderings: viewer may be owner or customer
-        const orFilter = `(and(customer_id.eq.${otherUserId},owner_id.eq.${user.id}),and(customer_id.eq.${user.id},owner_id.eq.${otherUserId}))`;
-        const snapUrl = `${supabaseUrl}/rest/v1/conversations?farmstand_id=eq.${farmstandId}&or=${encodeURIComponent(orFilter)}&select=owner_id,customer_id,customer_name,customer_avatar_url&limit=1`;
-        const res = await fetch(snapUrl, {
-          headers: { apikey: supabaseAnonKey, Authorization: `Bearer ${session.access_token}` },
-        });
+        if (__DEV__) console.log('[ThreadHeader] loading conversation by id:', actualThreadId);
+        const res = await fetch(
+          `${supabaseUrl}/rest/v1/conversations?id=eq.${actualThreadId}&select=id,owner_id,customer_id,customer_name,customer_avatar_url,farmstands(name,photos,photo_url)&limit=1`,
+          { headers: { apikey: supabaseAnonKey, Authorization: `Bearer ${session.access_token}` } }
+        );
         if (res.ok) {
           const rows = await res.json() as Array<{
+            id: string;
             owner_id: string;
             customer_id: string;
             customer_name: string | null;
             customer_avatar_url: string | null;
+            farmstands: { name: string | null; photos: string[] | null; photo_url: string | null } | null;
           }>;
           const row = rows?.[0];
           if (row) {
             const isOwner = row.owner_id === user.id;
-            if (__DEV__) console.log('[ThreadHeader] loaded snapshot — viewerIsOwner:', isOwner, '| customer_name:', row.customer_name ?? '(null)', '| hasAvatar:', !!row.customer_avatar_url);
+            if (__DEV__) console.log('[ThreadHeader] loaded conversation — id:', row.id, '| owner_id:', row.owner_id, '| customer_id:', row.customer_id);
+            if (__DEV__) console.log('[ThreadHeader] current user role:', isOwner ? 'owner' : 'customer', '| user.id:', user.id);
             if (isOwner) {
-              // Owner tapping push: header must show customer name, not farmstand name.
-              // Set this early so the role is correct before the bootstrap store loads.
+              if (__DEV__) console.log('[ThreadHeader] applying owner-side customer header — name:', row.customer_name ?? '(null)', '| hasAvatar:', !!row.customer_avatar_url);
+              // Header must show the customer's identity, not the farmstand.
+              // Set viewerIsOwnerFromConversation early so the role is correct
+              // before the bootstrap store's ownedFarmstands finishes loading.
               setViewerIsOwnerFromConversation(true);
               if (row.customer_name) {
                 setOtherUserProfile({ full_name: row.customer_name, avatar_url: row.customer_avatar_url ?? null });
               }
+            } else {
+              const fs = row.farmstands;
+              if (__DEV__) console.log('[ThreadHeader] applying customer-side farmstand header — name:', fs?.name ?? '(null)');
+              if (fs?.name) {
+                // Hydrate fetchedFarmstand so farmstandDisplayName resolves immediately
+                // without waiting for the separate farmstand fetch effect to complete.
+                // Preserve deleted_at from the prior state (set by the farmstand fetch).
+                setFetchedFarmstand(prev => ({
+                  name: fs.name ?? '',
+                  photos: fs.photos ?? null,
+                  photo_url: fs.photo_url ?? null,
+                  deleted_at: prev?.deleted_at ?? null,
+                }));
+              }
             }
-            // Customer tapping push: farmstand info is already handled by fetchedFarmstand effect
           } else {
-            if (__DEV__) console.log('[ThreadHeader] loaded snapshot — no conversation row found');
+            if (__DEV__) console.log('[ThreadHeader] failed to hydrate header — no conversation row found for id:', actualThreadId);
           }
         } else {
-          if (__DEV__) console.log('[ThreadHeader] snapshot load failed — HTTP:', res.status);
+          if (__DEV__) console.log('[ThreadHeader] failed to hydrate header — HTTP:', res.status);
         }
       } catch (err) {
-        if (__DEV__) console.log('[ThreadHeader] snapshot load failed:', err instanceof Error ? err.message : String(err));
+        if (__DEV__) console.log('[ThreadHeader] failed to hydrate header:', err instanceof Error ? err.message : String(err));
       }
     })();
-  }, [isDirectMode, farmstandId, otherUserId, user?.id, otherUserName]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actualThreadId, user?.id]);
 
   // Viewer role: from bootstrap store (loads async) OR from conversation snapshot (set early
   // after the snapshot fetch). The OR ensures the header is correct even before bootstrap loads,
