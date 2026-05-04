@@ -109,7 +109,7 @@ export interface ClaimApprovedModalProps {
 
 // ─── Modal ────────────────────────────────────────────────────────────────────
 
-const ENTITLEMENT_ID = 'pro';
+const ENTITLEMENT_ID = 'Farmstand Premium';
 
 export function ClaimApprovedModal({ visible, farmstandId, onDismiss }: ClaimApprovedModalProps) {
   const router = useRouter();

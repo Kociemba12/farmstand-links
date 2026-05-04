@@ -46,7 +46,7 @@ const BACKEND_URL = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
-const ENTITLEMENT_ID = 'pro';
+const ENTITLEMENT_ID = 'Farmstand Premium';
 
 // ─── Feature Row ─────────────────────────────────────────────────────────────
 

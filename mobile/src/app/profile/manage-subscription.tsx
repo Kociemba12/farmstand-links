@@ -17,7 +17,7 @@ import { useBootstrapStore } from '@/lib/bootstrap-store';
 import { prepareForPurchase } from '@/lib/revenuecat';
 import { MenuRow } from '@/components/MenuRow';
 
-const ENTITLEMENT_ID = 'pro';
+const ENTITLEMENT_ID = 'Farmstand Premium';
 const BG_COLOR = '#FAF7F2';
 
 function formatDate(dateStr: string | null | undefined): string {

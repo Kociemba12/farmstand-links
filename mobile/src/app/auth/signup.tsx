@@ -25,7 +25,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 import { useUserStore, isAdminEmail } from '@/lib/user-store';
-import { supabaseAuthSignUp, isSupabaseConfigured, SupabaseError, setSupabaseSession, fetchProfileAvatarUrl, supabaseSignInWithOAuth, fetchSupabaseProfileFull } from '@/lib/supabase';
+import { supabaseAuthSignUp, supabaseAuthSignIn, isSupabaseConfigured, SupabaseError, setSupabaseSession, fetchProfileAvatarUrl, supabaseSignInWithOAuth, fetchSupabaseProfileFull } from '@/lib/supabase';
 import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { logSignupStart, logSignupComplete } from '@/lib/analytics-events';
@@ -180,7 +180,7 @@ export default function SignUpScreen() {
   };
 
   // Log the user in locally and navigate to the app
-  const loginAndNavigate = async (userId: string, userName: string, userEmail: string, session?: { access_token: string; refresh_token: string; expires_at?: number } | null) => {
+  const loginAndNavigate = async (userId: string, userName: string, userEmail: string, session: { access_token: string; refresh_token: string; expires_at?: number }) => {
     const names = userName.split(' ');
     const initials = names.map(n => n[0]).join('').toUpperCase().slice(0, 2);
 
@@ -201,12 +201,7 @@ export default function SignUpScreen() {
 
     await AsyncStorage.setItem('farmstand_user', JSON.stringify(userProfile));
     await AsyncStorage.setItem('farmstand_logged_in', 'true');
-
-    if (session?.access_token) {
-      await setSupabaseSession(session);
-      notifySessionChanged();
-      console.log('[SignUp] Session stored and AuthProvider notified');
-    }
+    await setSupabaseSession(session);
 
     const registeredUsersData = await AsyncStorage.getItem('farmstand_registered_users');
     const registeredUsers: Array<{ email: string; password: string; name: string; id?: string }> =
@@ -218,10 +213,16 @@ export default function SignUpScreen() {
       await AsyncStorage.setItem('farmstand_registered_users', JSON.stringify(registeredUsers));
     }
 
-    useUserStore.setState({ user: userProfile, isLoggedIn: true });
+    if (__DEV__) {
+      console.log('[SignUp] loginAndNavigate — userId:', userId, '| hasSession: true | route: (tabs)');
+    }
 
-    // Reset the entire navigation stack to (tabs) so neither the signup modal
-    // nor the login screen underneath it can flash during the transition.
+    // Commit all state updates in one synchronous block so React batches them
+    // together. The Profile tab's auth guard reads authSession on first render —
+    // calling notifySessionChanged() here (not earlier) ensures AuthProvider has
+    // the new session before any tab screen mounts.
+    useUserStore.setState({ user: userProfile, isLoggedIn: true });
+    notifySessionChanged();
     navigation.dispatch(CommonActions.reset({ index: 0, routes: [{ name: '(tabs)' }] }));
   };
 
@@ -320,10 +321,32 @@ export default function SignUpScreen() {
         }
 
         if (data?.user) {
-          console.log('[SignUp] Success - logging in and navigating to app');
-          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          if (__DEV__) console.log('[SignUp] signup success — userId:', data.user.id, '| sessionReturned:', !!(data.session));
           logSignupComplete(data.user.id);
-          const session = data.session as { access_token: string; refresh_token: string; expires_at?: number } | null;
+
+          let session = data.session as { access_token: string; refresh_token: string; expires_at?: number } | null;
+
+          if (!session?.access_token) {
+            // Supabase project has email confirmation enabled — signUp creates the user
+            // but returns no session. Sign in immediately with the same credentials so
+            // the user lands on Explore without a "Check your email" detour.
+            if (__DEV__) console.log('[SignUp] No session from signUp — attempting fallback signIn');
+            const { data: signInData, error: signInError } = await supabaseAuthSignIn(trimmedEmail, password);
+            if (signInError || !signInData?.session?.access_token) {
+              if (__DEV__) console.log('[SignUp] Fallback signIn failed:', signInError?.message ?? 'no session');
+              // Account was created but we can't get a session right now.
+              // Show a friendly message and let the user sign in manually.
+              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+              setError('Account created! Please sign in to continue.');
+              goToLoginWithEmail(trimmedEmail);
+              return;
+            }
+            if (__DEV__) console.log('[SignUp] Fallback signIn succeeded');
+            session = signInData.session as { access_token: string; refresh_token: string; expires_at?: number };
+          }
+
+          if (__DEV__) console.log('[SignUp] Navigating to Explore — userId:', data.user.id);
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           await loginAndNavigate(data.user.id, trimmedName, trimmedEmail, session);
         }
       } else {

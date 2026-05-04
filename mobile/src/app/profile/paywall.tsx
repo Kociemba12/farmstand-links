@@ -31,7 +31,7 @@ import { useBootstrapStore } from '@/lib/bootstrap-store';
 import { isRevenueCatReady, prepareForPurchase } from '@/lib/revenuecat';
 import { trackEvent } from '@/lib/track';
 
-const ENTITLEMENT_ID = 'pro';
+const ENTITLEMENT_ID = 'Farmstand Premium';
 
 const FEATURES = [
   {
@@ -330,6 +330,7 @@ export default function PaywallScreen() {
     try {
       console.log('[Paywall] Calling Purchases.restorePurchases()...');
       const info = await Purchases.restorePurchases();
+      setCustomerInfo(info);
       const isPremiumActive = !!info.entitlements.active[ENTITLEMENT_ID];
       console.log('[Paywall] restorePurchases() complete — premium active:', isPremiumActive);
 

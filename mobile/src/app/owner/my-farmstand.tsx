@@ -511,7 +511,7 @@ export default function MyFarmstandScreen() {
     if (!isRevenueCatReady()) return;
     Purchases.getCustomerInfo()
       .then((info) => {
-        const active = !!info.entitlements.active['pro'];
+        const active = !!info.entitlements.active['Farmstand Premium'];
         setIsPremiumActive(active);
       })
       .catch((e) => {
