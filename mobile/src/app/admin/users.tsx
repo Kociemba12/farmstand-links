@@ -111,6 +111,7 @@ function UsersContent() {
   const patchManagedUserRole   = useAdminStore(s => s.patchManagedUserRole);
   const patchManagedUserStatus = useAdminStore(s => s.patchManagedUserStatus);
   const removeManagedUser      = useAdminStore(s => s.removeManagedUser);
+  const deleteManagedUser      = useAdminStore(s => s.deleteManagedUser);
   const purgeFarmstandAfterAdminRemove = useAdminStore(s => s.purgeFarmstandAfterAdminRemove);
 
   // Local UI state
@@ -129,6 +130,7 @@ function UsersContent() {
   const [selectedUser, setSelectedUser]   = useState<BackendUser | null>(null);
   const [showActionMenu, setShowActionMenu] = useState(false);
   const [showRoleMenu, setShowRoleMenu]     = useState(false);
+  const [isDeleting, setIsDeleting]         = useState(false);
 
   // Alert broadcast modal
   const [showAlertModal, setShowAlertModal] = useState(false);
@@ -400,22 +402,35 @@ function UsersContent() {
     setSelectedUser(null);
   };
 
-  const handleDeleteUser = () => {
-    if (!selectedUser) return;
+  // userToDelete is passed directly — never relies on selectedUser state to avoid wrong-ID bugs
+  const handleDeleteUser = (userToDelete: BackendUser) => {
+    if (__DEV__) console.log('[AdminUsers] delete button pressed — auth user id:', userToDelete.id, '| email:', userToDelete.email);
     setShowActionMenu(false);
     Alert.alert(
       'Delete User',
-      `Are you sure you want to delete "${selectedUser.full_name}"? This cannot be undone.`,
+      `Permanently delete "${userToDelete.full_name}"?\n\nThis removes all their data and cannot be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
+            if (isDeleting) return;
             await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-            removeManagedUser(selectedUser.id);
-            setSelectedIds(prev => { const n = new Set(prev); n.delete(selectedUser.id); return n; });
-            setSelectedUser(null);
+            setIsDeleting(true);
+            if (__DEV__) console.log('[AdminUsers] confirmed delete — sending auth user id:', userToDelete.id);
+            const result = await deleteManagedUser(userToDelete.id);
+            setIsDeleting(false);
+            console.log('[DELETE RESPONSE]', result);
+            if (result.success) {
+              console.log('[DELETE SUCCESS]', userToDelete.id);
+              setSelectedIds(prev => { const n = new Set(prev); n.delete(userToDelete.id); return n; });
+              setSelectedUser(null);
+              setShowActionMenu(false);
+              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            } else {
+              Alert.alert('Delete Failed', result?.error || JSON.stringify(result) || 'Unknown error');
+            }
           },
         },
       ]
@@ -684,128 +699,148 @@ function UsersContent() {
             const isSelected  = selectedIds.has(user.id);
             const IconComponent = roleStyle.icon;
 
+            // Compute farmstands here so both the ownership section and the delete button can use it
+            const userFarmstands = isFarmer(user)
+              ? allFarmstands.filter(
+                  f => (f.ownerUserId && f.ownerUserId === user.id) ||
+                       (f.claimedByUserId && f.claimedByUserId === user.id)
+                )
+              : [];
+
             return (
               <Animated.View
                 key={user.id}
                 entering={FadeInDown.delay(220 + index * 40).duration(350)}
               >
-                <Pressable onPress={() => toggleSelect(user.id)} onLongPress={() => handleOpenMenu(user)}>
-                  <View
-                    className={`bg-white rounded-[20px] p-4 mb-3 ${
-                      user.status === 'suspended' ? 'border-2 border-red-200' : ''
-                    } ${isSelected ? 'border-2 border-blue-400' : ''}`}
-                    style={{
-                      shadowColor: '#000',
-                      shadowOffset: { width: 0, height: 3 },
-                      shadowOpacity: isSelected ? 0.1 : 0.06,
-                      shadowRadius: 12,
-                      elevation: isSelected ? 5 : 3,
-                    }}
-                  >
-                    <View className="flex-row items-center">
-                      {/* Avatar / checkbox */}
-                      <View className="mr-3">
-                        {isSelected ? (
-                          <View className="w-10 h-10 rounded-full bg-blue-500 items-center justify-center">
-                            <Check size={18} color="white" />
-                          </View>
-                        ) : (
-                          <View
-                            className="w-10 h-10 rounded-full items-center justify-center"
-                            style={{ backgroundColor: user.status === 'suspended' ? '#FEE2E2' : roleStyle.bg }}
-                          >
-                            <IconComponent size={20} color={user.status === 'suspended' ? '#DC2626' : roleStyle.iconColor} />
+                {/* Card container — NOT a Pressable so farmstand and delete sections don't interfere */}
+                <View
+                  className={`bg-white rounded-[20px] mb-3 overflow-hidden ${
+                    user.status === 'suspended' ? 'border-2 border-red-200' : ''
+                  } ${isSelected ? 'border-2 border-blue-400' : ''}`}
+                  style={{
+                    shadowColor: '#000',
+                    shadowOffset: { width: 0, height: 3 },
+                    shadowOpacity: isSelected ? 0.1 : 0.06,
+                    shadowRadius: 12,
+                    elevation: isSelected ? 5 : 3,
+                  }}
+                >
+                  {/* ── Tappable header section (tap = select, long-press = action menu) ── */}
+                  <Pressable onPress={() => toggleSelect(user.id)} onLongPress={() => handleOpenMenu(user)}>
+                    <View className="p-4">
+                      <View className="flex-row items-center">
+                        {/* Avatar / checkbox */}
+                        <View className="mr-3">
+                          {isSelected ? (
+                            <View className="w-10 h-10 rounded-full bg-blue-500 items-center justify-center">
+                              <Check size={18} color="white" />
+                            </View>
+                          ) : (
+                            <View
+                              className="w-10 h-10 rounded-full items-center justify-center"
+                              style={{ backgroundColor: user.status === 'suspended' ? '#FEE2E2' : roleStyle.bg }}
+                            >
+                              <IconComponent size={20} color={user.status === 'suspended' ? '#DC2626' : roleStyle.iconColor} />
+                            </View>
+                          )}
+                        </View>
+
+                        {/* Info */}
+                        <View className="flex-1">
+                          <Text className="text-base font-semibold text-stone-900">{user.full_name}</Text>
+                          <Text className="text-xs text-stone-500 mt-0.5" numberOfLines={1}>{user.email}</Text>
+                        </View>
+
+                        {/* Edit — opens action menu (role/status changes) */}
+                        <Pressable
+                          onPress={() => handleOpenMenu(user)}
+                          hitSlop={8}
+                          className="px-3 py-2 bg-stone-100 rounded-full active:bg-stone-200"
+                        >
+                          <Text className="text-xs font-medium text-stone-600">Edit</Text>
+                        </Pressable>
+                      </View>
+
+                      {/* Badges */}
+                      <View className="flex-row mt-3 pt-3 border-t border-stone-100 items-center flex-wrap" style={{ gap: 6 }}>
+                        {isFarmer(user) && (
+                          <View className="px-2.5 py-1 rounded-full" style={{ backgroundColor: '#DCFCE7' }}>
+                            <Text className="text-xs font-semibold" style={{ color: '#16A34A' }}>Farmer</Text>
                           </View>
                         )}
+                        {isPremium(user) && (
+                          <View className="flex-row items-center px-2.5 py-1 rounded-full" style={{ backgroundColor: '#FEF3C7' }}>
+                            <Crown size={10} color="#D97706" style={{ marginRight: 3 }} />
+                            <Text className="text-xs font-semibold" style={{ color: '#D97706' }}>Premium</Text>
+                          </View>
+                        )}
+                        {isConsumer(user) && (
+                          <View className="px-2.5 py-1 rounded-full" style={{ backgroundColor: '#F3F4F6' }}>
+                            <Text className="text-xs font-semibold" style={{ color: '#6B7280' }}>Consumer</Text>
+                          </View>
+                        )}
+                        <View className="px-2.5 py-1 rounded-full" style={{ backgroundColor: statusStyle.bg }}>
+                          <Text className="text-xs font-semibold capitalize" style={{ color: statusStyle.text }}>
+                            {user.status}
+                          </Text>
+                        </View>
+                        <View className="flex-1" />
+                        <Text className="text-xs text-stone-400">Joined {formatJoinDate(user.created_at)}</Text>
                       </View>
-
-                      {/* Info */}
-                      <View className="flex-1">
-                        <Text className="text-base font-semibold text-stone-900">{user.full_name}</Text>
-                        <Text className="text-xs text-stone-500 mt-0.5" numberOfLines={1}>{user.email}</Text>
-                      </View>
-
-                      {/* Edit */}
-                      <Pressable
-                        onPress={() => handleOpenMenu(user)}
-                        hitSlop={8}
-                        className="px-3 py-2 bg-stone-100 rounded-full active:bg-stone-200"
-                      >
-                        <Text className="text-xs font-medium text-stone-600">Edit</Text>
-                      </Pressable>
                     </View>
+                  </Pressable>
 
-                    {/* Badges */}
-                    <View className="flex-row mt-3 pt-3 border-t border-stone-100 items-center flex-wrap" style={{ gap: 6 }}>
-                      {/* Farmer badge */}
-                      {isFarmer(user) && (
-                        <View className="px-2.5 py-1 rounded-full" style={{ backgroundColor: '#DCFCE7' }}>
-                          <Text className="text-xs font-semibold" style={{ color: '#16A34A' }}>Farmer</Text>
+                  {/* ── Farmstand Ownership section — outside the selection Pressable ── */}
+                  {userFarmstands.length > 0 && (
+                    <View className="border-t border-stone-100 px-4 pb-3 pt-2">
+                      <Text className="text-xs font-semibold text-stone-400 uppercase tracking-wide mb-2">
+                        Farmstand Ownership
+                      </Text>
+                      {userFarmstands.map(fs => (
+                        <View key={fs.id} className="flex-row items-center mb-1.5">
+                          <View className="w-5 h-5 rounded-full bg-green-100 items-center justify-center mr-2">
+                            <Store size={10} color="#16A34A" />
+                          </View>
+                          <View className="flex-1 mr-2">
+                            <Text className="text-xs font-medium text-stone-700" numberOfLines={1}>
+                              {fs.name || 'Unnamed Farmstand'}
+                            </Text>
+                            {(fs.city || fs.state) && (
+                              <Text className="text-xs text-stone-400">
+                                {[fs.city, fs.state].filter(Boolean).join(', ')}
+                              </Text>
+                            )}
+                          </View>
+                          {/* Removes farmstand ownership — uses fs.id (farmstand) + user.id (owner auth UUID) */}
+                          <Pressable
+                            onPress={() => handleOpenRemoveOwnership(fs.id, fs.name || 'Unnamed Farmstand', user.id, user.full_name)}
+                            className="flex-row items-center px-2.5 py-1.5 rounded-full active:opacity-70"
+                            style={{ backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA' }}
+                          >
+                            <ShieldOff size={11} color="#EF4444" />
+                            <Text className="text-xs font-semibold ml-1" style={{ color: '#EF4444' }}>
+                              Remove Ownership
+                            </Text>
+                          </Pressable>
                         </View>
-                      )}
-                      {/* Premium badge */}
-                      {isPremium(user) && (
-                        <View className="flex-row items-center px-2.5 py-1 rounded-full" style={{ backgroundColor: '#FEF3C7' }}>
-                          <Crown size={10} color="#D97706" style={{ marginRight: 3 }} />
-                          <Text className="text-xs font-semibold" style={{ color: '#D97706' }}>Premium</Text>
-                        </View>
-                      )}
-                      {/* Consumer badge — only when neither farmer nor premium */}
-                      {isConsumer(user) && (
-                        <View className="px-2.5 py-1 rounded-full" style={{ backgroundColor: '#F3F4F6' }}>
-                          <Text className="text-xs font-semibold" style={{ color: '#6B7280' }}>Consumer</Text>
-                        </View>
-                      )}
-                      <View className="px-2.5 py-1 rounded-full" style={{ backgroundColor: statusStyle.bg }}>
-                        <Text className="text-xs font-semibold capitalize" style={{ color: statusStyle.text }}>
-                          {user.status}
-                        </Text>
-                      </View>
-                      <View className="flex-1" />
-                      <Text className="text-xs text-stone-400">Joined {formatJoinDate(user.created_at)}</Text>
+                      ))}
                     </View>
+                  )}
 
-                    {/* Claimed farmstands — shown for farmers with owned farmstands */}
-                    {isFarmer(user) && (() => {
-                      const userFarmstands = allFarmstands.filter(
-                        f => (f.ownerUserId && f.ownerUserId === user.id) ||
-                             (f.claimedByUserId && f.claimedByUserId === user.id)
-                      );
-                      if (userFarmstands.length === 0) return null;
-                      return (
-                        <View className="mt-2 pt-2 border-t border-stone-100" style={{ gap: 6 }}>
-                          {userFarmstands.map(fs => (
-                            <View key={fs.id} className="flex-row items-center">
-                              <View className="w-5 h-5 rounded-full bg-green-100 items-center justify-center mr-2">
-                                <Store size={10} color="#16A34A" />
-                              </View>
-                              <View className="flex-1">
-                                <Text className="text-xs font-medium text-stone-700" numberOfLines={1}>
-                                  {fs.name || 'Unnamed Farmstand'}
-                                </Text>
-                                {(fs.city || fs.state) && (
-                                  <Text className="text-xs text-stone-400">
-                                    {[fs.city, fs.state].filter(Boolean).join(', ')}
-                                  </Text>
-                                )}
-                              </View>
-                              <Pressable
-                                onPress={() => handleOpenRemoveOwnership(fs.id, fs.name || 'Unnamed Farmstand', user.id, user.full_name)}
-                                className="flex-row items-center px-2.5 py-1.5 rounded-full active:opacity-70"
-                                style={{ backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA' }}
-                              >
-                                <ShieldOff size={11} color="#EF4444" />
-                                <Text className="text-xs font-semibold ml-1" style={{ color: '#EF4444' }}>
-                                  Remove
-                                </Text>
-                              </Pressable>
-                            </View>
-                          ))}
-                        </View>
-                      );
-                    })()}
+                  {/* ── Delete Account — uses user.id (auth UUID) directly, no selectedUser indirection ── */}
+                  <View className="border-t border-stone-100 px-4 pb-3 pt-2">
+                    <Pressable
+                      onPress={() => handleDeleteUser(user)}
+                      className="flex-row items-center justify-center py-2 rounded-xl active:opacity-70"
+                      style={{ backgroundColor: '#FEF2F2' }}
+                    >
+                      <Trash2 size={13} color="#EF4444" />
+                      <Text className="text-xs font-semibold ml-1.5" style={{ color: '#EF4444' }}>
+                        Delete Account
+                      </Text>
+                    </Pressable>
                   </View>
-                </Pressable>
+                </View>
               </Animated.View>
             );
           })}
@@ -915,11 +950,11 @@ function UsersContent() {
               <ChevronRight size={18} color="#A8A29E" />
             </Pressable>
 
-            <Pressable onPress={handleDeleteUser} className="flex-row items-center px-5 py-4 active:bg-stone-50">
+            <Pressable onPress={() => selectedUser && handleDeleteUser(selectedUser)} className="flex-row items-center px-5 py-4 active:bg-stone-50">
               <View className="w-10 h-10 rounded-full bg-red-100 items-center justify-center mr-4">
                 <Trash2 size={18} color="#EF4444" />
               </View>
-              <Text className="text-base text-red-500 flex-1">Remove from List</Text>
+              <Text className="text-base text-red-500 flex-1">Delete User</Text>
               <ChevronRight size={18} color="#A8A29E" />
             </Pressable>
 

@@ -176,3 +176,52 @@ export async function logOutRevenueCatUser(): Promise<void> {
     console.warn('[RevenueCat] Failed to log out user:', e);
   }
 }
+
+export interface RevenueCatOwnerAttributes {
+  email?: string | null;
+  displayName?: string | null;
+  ownerUserId?: string | null;
+  farmstandName?: string | null;
+  farmstandId?: string | null;
+  farmstandAddress?: string | null;
+  farmstandCity?: string | null;
+  farmstandState?: string | null;
+}
+
+/**
+ * Set subscriber attributes on the RevenueCat customer so the dashboard shows
+ * who each customer is and which farmstand they own.
+ *
+ * Uses RevenueCat reserved keys ($email, $displayName) plus custom keys for
+ * farmstand-specific fields. Only sends attributes that have a truthy value.
+ * No-op if RevenueCat is not ready.
+ */
+export async function setRevenueCatAttributes(attrs: RevenueCatOwnerAttributes): Promise<void> {
+  if (!_rcReady) {
+    if (__DEV__) console.log('[RevenueCat][Attrs] RC not ready — skipping setAttributes');
+    return;
+  }
+  try {
+    const toSet: Record<string, string> = {};
+
+    if (attrs.email) toSet['$email'] = attrs.email;
+    if (attrs.displayName) toSet['$displayName'] = attrs.displayName;
+    if (attrs.ownerUserId) toSet['owner_user_id'] = attrs.ownerUserId;
+    if (attrs.farmstandName) toSet['farmstand_name'] = attrs.farmstandName;
+    if (attrs.farmstandId) toSet['farmstand_id'] = attrs.farmstandId;
+    if (attrs.farmstandAddress) toSet['farmstand_address'] = attrs.farmstandAddress;
+    if (attrs.farmstandCity) toSet['farmstand_city'] = attrs.farmstandCity;
+    if (attrs.farmstandState) toSet['farmstand_state'] = attrs.farmstandState;
+
+    const keys = Object.keys(toSet);
+    if (keys.length === 0) {
+      if (__DEV__) console.log('[RevenueCat][Attrs] No non-null attributes to set — skipping');
+      return;
+    }
+
+    await Purchases.setAttributes(toSet);
+    if (__DEV__) console.log('[RevenueCat][Attrs] setAttributes called with keys:', keys.join(', '));
+  } catch (e) {
+    console.warn('[RevenueCat][Attrs] setAttributes failed (non-fatal):', e instanceof Error ? e.message : String(e));
+  }
+}

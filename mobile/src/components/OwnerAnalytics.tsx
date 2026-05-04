@@ -82,26 +82,10 @@ const METRIC_EXPLANATIONS: Record<string, MetricExplanation> = {
     why: 'Shows whether people are interested enough to take the next step after finding you.',
     how: 'A higher intent rate means your listing is attractive and useful. Work on photos and product info to improve it.',
     benchmarks: [
-      {
-        range: '0–5%',
-        label: 'Needs Improvement',
-        description: 'Most viewers are not taking action yet. Better photos, clearer product info, and a complete listing can make a big difference.',
-      },
-      {
-        range: '5–10%',
-        label: 'Average',
-        description: 'Your listing is getting some meaningful actions. There is room to grow with stronger photos and updated product details.',
-      },
-      {
-        range: '10–20%',
-        label: 'Good',
-        description: 'Your stand is attracting real interest. People are viewing it and taking action — keep it up.',
-      },
-      {
-        range: '20%+',
-        label: 'Excellent',
-        description: 'Your listing is highly engaging. People are not just browsing — they are saving, getting directions, and taking meaningful next steps.',
-      },
+      { range: '0–5%',   label: 'Needs Improvement', description: '' },
+      { range: '5–10%',  label: 'Average',            description: '' },
+      { range: '10–20%', label: 'Good',               description: '' },
+      { range: '20%+',   label: 'Excellent',          description: '' },
     ],
     tip: 'Intent rate improves with better photos, updated products, stock alerts, and a complete listing.',
   },
@@ -192,10 +176,10 @@ function MetricExplainSheet({ visible, onClose, metricKey }: MetricExplainSheetP
 
           {/* Scrollable content */}
           <ScrollView
-            style={{ flexGrow: 0 }}
+            style={{ maxHeight: '100%' }}
             showsVerticalScrollIndicator={true}
             bounces={false}
-            contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: insets.bottom + 48 }}
+            contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 20, paddingBottom: insets.bottom + 100 }}
           >
             <View className="mb-4">
               <Text className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1.5">What it is</Text>
@@ -225,7 +209,7 @@ function MetricExplainSheet({ visible, onClose, metricKey }: MetricExplainSheetP
                         <View className="w-1 h-1 bg-gray-300 rounded-full" />
                         <Text className="text-gray-700 font-semibold text-sm">{b.label}</Text>
                       </View>
-                      <Text className="text-gray-500 text-sm leading-relaxed">{b.description}</Text>
+                      {b.description ? <Text className="text-gray-500 text-sm leading-relaxed">{b.description}</Text> : null}
                     </View>
                   ))}
                 </View>

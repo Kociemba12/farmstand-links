@@ -439,6 +439,7 @@ interface AdminState {
   patchManagedUserRole: (id: string, role: BackendUser['role']) => void;
   patchManagedUserStatus: (id: string, status: BackendUser['status']) => void;
   removeManagedUser: (id: string) => void;
+  deleteManagedUser: (id: string) => Promise<{ success: boolean; error?: string }>;
   // Optimistically clears ownership fields on a farmstand after admin removes ownership
   clearFarmstandOwnership: (farmstandId: string) => void;
   // Fully purges a farmstand from all local stores after admin delete (remove from profile, map, manage users)
@@ -1745,6 +1746,55 @@ export const useAdminStore = create<AdminState>((set, get) => ({
 
   removeManagedUser: (id: string) => {
     set(s => ({ managedUsers: s.managedUsers.filter(u => u.id !== id) }));
+  },
+
+  deleteManagedUser: async (id: string) => {
+    const backendUrl = process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL || '';
+    try {
+      const session = await getValidSession();
+      if (!session?.access_token) return { success: false, error: 'Session expired. Please sign in again.' };
+
+      if (__DEV__) console.log('[AdminStore] deleteManagedUser — targetId:', id);
+
+      const resp = await fetch(`${backendUrl}/api/admin/users/${id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      // Read raw text first so we never lose the body even if JSON parse fails
+      const rawText = await resp.text();
+      let result: { success: boolean; error?: string; details?: string; hint?: string; code?: string } = {
+        success: resp.ok,
+        error: rawText || undefined,
+      };
+      try {
+        result = JSON.parse(rawText) as typeof result;
+      } catch {
+        // rawText is not JSON — keep it as the error string
+        result = { success: false, error: rawText || `Server error (HTTP ${resp.status})` };
+      }
+
+      console.log('[DELETE RESULT]', result);
+
+      if (!result.success) {
+        const error = `${result.error || ''} ${result.details || ''} ${result.hint || ''} ${result.code || ''}`.trim();
+        return { success: false, error: error || JSON.stringify(result) };
+      }
+
+      console.log('[DELETE SUCCESS]', id);
+      console.log('[USERS BEFORE DELETE] count:', get().managedUsers.length);
+      get().removeManagedUser(id);
+      console.log('[USERS AFTER LOCAL REMOVE] count:', get().managedUsers.length);
+      await get().loadManagedUsers();
+      console.log('[USERS AFTER RELOAD] count:', get().managedUsers.length);
+      return { success: true };
+    } catch (err) {
+      console.warn('[AdminStore] deleteManagedUser caught error:', err);
+      return { success: false, error: String(err) };
+    }
   },
 
   clearFarmstandOwnership: (farmstandId: string) => {

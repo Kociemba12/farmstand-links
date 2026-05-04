@@ -90,17 +90,21 @@ const serviceHeaders = {
 // ── GET /api/admin/users ──────────────────────────────────────────────────────
 
 adminUsersRouter.get("/users", async (c) => {
-  const { userId, email, error } = await verifyAdminJwt(c.req.header("Authorization"));
-  if (error || !userId) {
-    console.log("[AdminUsers] Auth failed:", error);
-    return c.json({ success: false, error: "Unauthorized" }, 401);
-  }
-  if (!isAdminEmail(email)) {
-    console.log("[AdminUsers] Non-admin access attempt:", email);
-    return c.json({ success: false, error: "Admin access required" }, 403);
-  }
+  console.log("[AdminUsers] GET /users — request received");
 
   try {
+    // Auth — inside try so any network error from verifyAdminJwt is caught and returns JSON
+    const { userId, email, error } = await verifyAdminJwt(c.req.header("Authorization"));
+    if (error || !userId) {
+      console.log("[AdminUsers] Auth failed:", error);
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+    if (!isAdminEmail(email)) {
+      console.log("[AdminUsers] Non-admin access attempt:", email);
+      return c.json({ success: false, error: "Admin access required" }, 403);
+    }
+    console.log("[AdminUsers] Auth verified — adminId:", userId);
+
     // 1. Fetch all auth users via Supabase Admin API (service role required)
     //    Pagination: up to 1000 users per page — sufficient for most apps.
     //    For very large userbases, add pagination support later.
@@ -115,6 +119,7 @@ adminUsersRouter.get("/users", async (c) => {
       },
     });
 
+    console.log("[AdminUsers] auth.users fetch — status:", authResp.status);
     if (!authResp.ok) {
       const errText = await authResp.text();
       console.error("[AdminUsers] Auth users fetch failed:", authResp.status, errText);
@@ -126,7 +131,7 @@ adminUsersRouter.get("/users", async (c) => {
       aud?: string;
     };
     const authUsers: SupabaseAuthUser[] = authData?.users ?? [];
-    console.log(`[AdminUsers] Fetched ${authUsers.length} auth users`);
+    console.log(`[AdminUsers] auth.users — fetched ${authUsers.length} users`);
 
     // 2. Fetch all profiles (role, status, avatar, name)
     const profilesUrl = new URL(`${SUPABASE_URL}/rest/v1/profiles`);
@@ -136,9 +141,16 @@ adminUsersRouter.get("/users", async (c) => {
       headers: serviceHeaders,
     });
 
+    console.log("[AdminUsers] profiles fetch — status:", profilesResp.status);
+    if (!profilesResp.ok) {
+      const profErrText = await profilesResp.text();
+      console.error("[AdminUsers] Profiles fetch failed:", profilesResp.status, profErrText);
+    }
+
     const profiles: ProfileRow[] = profilesResp.ok
       ? ((await profilesResp.json()) as ProfileRow[])
       : [];
+    console.log(`[AdminUsers] profiles — fetched ${profiles.length} rows`);
 
     const profileMap = new Map<string, ProfileRow>(profiles.map((p) => [p.uid, p]));
 
@@ -153,6 +165,7 @@ adminUsersRouter.get("/users", async (c) => {
     );
 
     const fsResp = await fetch(fsUrl.toString(), { headers: serviceHeaders });
+    console.log("[AdminUsers] farmstands fetch — status:", fsResp.status);
     if (!fsResp.ok) {
       const fsErrText = await fsResp.text();
       console.error("[AdminUsers] Farmstands fetch failed:", fsResp.status, fsErrText);
@@ -160,7 +173,7 @@ adminUsersRouter.get("/users", async (c) => {
     const farmstands: FarmstandRow[] = fsResp.ok
       ? ((await fsResp.json()) as FarmstandRow[])
       : [];
-    console.log(`[AdminUsers] Fetched ${farmstands.length} farmstands for premium check`);
+    console.log(`[AdminUsers] farmstands — fetched ${farmstands.length} rows`);
 
     // Per-user farmstand count (farmer detection: owner_id only, unchanged)
     const farmstandCounts = new Map<string, number>();
@@ -432,4 +445,88 @@ adminUsersRouter.patch("/users/:id/status", async (c) => {
 
   console.log(`[AdminUsers] Updated status for ${targetId} → ${parsed.data.status}`);
   return c.json({ success: true });
+});
+
+// ── DELETE /api/admin/users/:id ───────────────────────────────────────────────
+
+adminUsersRouter.delete("/users/:id", async (c) => {
+  // FIRST line — before any auth, any try — confirms the route is reached
+  console.log("[DELETE USER] route hit");
+
+  try {
+    // Auth
+    const { userId, email, error } = await verifyAdminJwt(c.req.header("Authorization"));
+    if (error || !userId) return c.json({ success: false, error: "Unauthorized" }, 401);
+    if (!isAdminEmail(email)) return c.json({ success: false, error: "Admin access required" }, 403);
+
+    const targetId = c.req.param("id");
+    console.log("[DELETE USER] adminUserId:", userId);
+    console.log("[DELETE USER] targetUserId:", targetId);
+
+    // RPC — clean up public.* table data first
+    const rpcResp = await fetch(`${SUPABASE_URL}/rest/v1/rpc/admin_delete_user_data`, {
+      method: "POST",
+      headers: serviceHeaders,
+      body: JSON.stringify({ p_admin_user_id: userId, p_user_id: targetId }),
+    });
+
+    const rawBody = await rpcResp.text();
+    console.log("[DELETE USER] rpc raw body:", rawBody);
+
+    if (!rawBody) {
+      console.error("[DELETE USER] EMPTY RPC RESPONSE");
+    }
+
+    interface RpcParsed { message?: string; details?: string; hint?: string; code?: string; success?: boolean; error?: string; }
+    let parsed: RpcParsed | null = null;
+    if (rawBody.trim()) {
+      try { parsed = JSON.parse(rawBody) as RpcParsed; } catch { /* non-JSON treated as raw error text */ }
+    }
+    console.log("[DELETE USER] parsed:", parsed);
+
+    if (!rpcResp.ok || (parsed !== null && parsed.success === false)) {
+      console.error("[DELETE USER ERROR]", {
+        message: parsed?.message,
+        details: parsed?.details,
+        hint: parsed?.hint,
+        code: parsed?.code,
+      });
+      return c.json({
+        success: false,
+        error: parsed?.message || rawBody || "NO ERROR RETURNED",
+        details: parsed?.details,
+        hint: parsed?.hint,
+        code: parsed?.code,
+      }, 500);
+    }
+
+    // Delete auth.users row (cascades to profiles)
+    const authDeleteResp = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${targetId}`, {
+      method: "DELETE",
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+    });
+
+    console.log("[DELETE USER] auth delete status:", authDeleteResp.status);
+    if (!authDeleteResp.ok && authDeleteResp.status !== 404) {
+      const authErr = await authDeleteResp.text();
+      console.error("[DELETE USER] auth delete failed:", authDeleteResp.status, authErr);
+      return c.json({
+        success: false,
+        error: `Auth delete failed (${authDeleteResp.status}): ${authErr || "NO ERROR RETURNED"}`,
+      }, 500);
+    }
+
+    console.log("[DELETE USER] success — user:", targetId, "deleted by admin:", userId);
+    return c.json({ success: true });
+
+  } catch (e) {
+    console.error("[DELETE USER FATAL]", e);
+    return c.json({
+      success: false,
+      error: (e as Error).message || "Fatal backend error",
+    }, 500);
+  }
 });

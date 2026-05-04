@@ -38,7 +38,7 @@ import { AuthProvider, useAuth } from '@/providers/AuthProvider';
 import { usePendingNotificationStore } from '@/lib/pending-notification-store';
 import { checkForPendingPremiumOnboarding, usePremiumOnboardingStore, hasPremiumOnboardingBeenSeen } from '@/lib/premium-onboarding-store';
 import { useFavoritesStore } from '@/lib/favorites-store';
-import { initRevenueCat, identifyRevenueCatUser, logOutRevenueCatUser } from '@/lib/revenuecat';
+import { initRevenueCat, identifyRevenueCatUser, logOutRevenueCatUser, setRevenueCatAttributes } from '@/lib/revenuecat';
 
 // Suppress RevenueCat SDK console.error overlays in dev — these fire when App Store Connect
 // products aren't configured (e.g. outside TestFlight). Production behavior is unchanged.
@@ -140,6 +140,39 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
     });
   }, [user?.id, userFarmstandsStatus, userFarmstands, hasCheckedThisSession, setHasCheckedThisSession, router]);
 
+  // Set RevenueCat subscriber attributes so the dashboard shows owner identity.
+  // Fires once per session after the user + their farmstands are both known.
+  // Uses a ref guard so it never fires more than once for the same user+farmstand pair.
+  const rcAttrsSentRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!user?.id || user.id === 'guest') return;
+    if (userFarmstandsStatus !== 'loaded') return;
+
+    // First non-deleted farmstand owned by this user (most owners have exactly one)
+    const primaryFarmstand = userFarmstands.find((f) => !f.deletedAt);
+
+    // Build a stable key so we re-send if the user or primary farmstand changes
+    const sentKey = `${user.id}:${primaryFarmstand?.id ?? 'none'}`;
+    if (rcAttrsSentRef.current === sentKey) return;
+    rcAttrsSentRef.current = sentKey;
+
+    const userEmail = user.email || null;
+    const userName = user.name || null;
+
+    if (__DEV__) console.log('[RevenueCat][Attrs] Sending owner attributes — userId:', user.id, '| farmstand:', primaryFarmstand?.id ?? '(none)', '| email:', userEmail ?? '(none)');
+
+    setRevenueCatAttributes({
+      email: userEmail,
+      displayName: userName,
+      ownerUserId: user.id,
+      farmstandName: primaryFarmstand?.name ?? null,
+      farmstandId: primaryFarmstand?.id ?? null,
+      farmstandAddress: primaryFarmstand?.addressLine1 ?? primaryFarmstand?.fullAddress ?? null,
+      farmstandCity: primaryFarmstand?.city ?? null,
+      farmstandState: primaryFarmstand?.state ?? null,
+    }).catch(() => {});
+  }, [user?.id, userFarmstandsStatus, userFarmstands]);
+
   // When the authenticated user changes (login, logout, account switch),
   // immediately wipe userFarmstands from the bootstrap store so stale
   // farmstand data from the previous session can never flash on screen.
@@ -231,15 +264,15 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
         console.log('[ColdStart] Initial notification received on cold start — id:', notifId);
         console.log('[ColdStart] Payload:', JSON.stringify(data));
 
-        // Extract farmstandId from payload (stock_alert and generic farmstand notifications
-        // both send farmstandId directly in the data object)
-        const farmstandId = data?.farmstandId ? (data.farmstandId as string) : null;
+        // Extract farmstandId from payload — handle both camelCase (farmstandId) and
+        // snake_case (farmstand_id) since the backend send uses snake_case keys.
+        const farmstandId = ((data?.farmstandId ?? data?.farmstand_id) as string | undefined) ?? null;
         const notifType = data?.type as string | undefined;
-        const claimId = data?.claimId as string | undefined;
-        const threadId = data?.threadId as string | undefined;
+        const claimId = (data?.claimId ?? data?.claim_id) as string | undefined;
+        const threadId = (data?.threadId ?? data?.thread_id) as string | undefined;
         const isMessage = notifType === 'message' || !!threadId;
 
-        console.log('[ColdStart] type:', notifType, 'farmstandId:', farmstandId, 'claimId:', claimId, 'threadId:', threadId, 'isMessage:', isMessage);
+        if (__DEV__) console.log('[ColdStart] type:', notifType, 'farmstandId:', farmstandId, 'claimId:', claimId, 'threadId:', threadId, 'isMessage:', isMessage, '| raw keys farmstand_id:', data?.farmstand_id, 'farmstandId:', data?.farmstandId);
 
         if (farmstandId || isMessage) {
           console.log('[ColdStart] Storing pending navigation — farmstandId:', farmstandId, 'type:', notifType, 'isMessage:', isMessage);
@@ -247,8 +280,8 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
           pendingColdStartFarmstandId.current = farmstandId;
           pendingColdStartNotifType.current = notifType ?? null;
           pendingColdStartClaimId.current = claimId ?? null;
-          pendingColdStartOtherUserId.current = isMessage ? ((data?.otherUserId as string) ?? null) : null;
-          pendingColdStartConversationId.current = isMessage ? ((data?.conversation_id as string) ?? null) : null;
+          pendingColdStartOtherUserId.current = isMessage ? (((data?.otherUserId ?? data?.other_user_id) as string) ?? null) : null;
+          pendingColdStartConversationId.current = isMessage ? (((data?.conversation_id ?? data?.conversationId) as string) ?? null) : null;
           pendingColdStartThreadId.current = isMessage ? (threadId ?? null) : null;
 
           // Edge case: splash already dismissed before this async check resolved
@@ -265,9 +298,9 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
               console.log('[ColdStart] claim_denied — navigating to claim resubmit screen for farmstand:', farmstandId, 'claimId:', claimId);
               router.push(`/farm/${farmstandId}?openClaimModal=true&claimMode=resubmit${claimParam}`);
             } else if (isMessage) {
-              const msgOtherUserId = data?.otherUserId as string | undefined;
-              const msgConversationId = data?.conversation_id as string | undefined;
-              const msgThreadId = data?.threadId as string | undefined;
+              const msgOtherUserId = (data?.otherUserId ?? data?.other_user_id) as string | undefined;
+              const msgConversationId = (data?.conversation_id ?? data?.conversationId) as string | undefined;
+              const msgThreadId = (data?.threadId ?? data?.thread_id) as string | undefined;
               const currentUserId = useUserStore.getState().user?.id;
               if (currentUserId && currentUserId !== 'guest') {
                 console.log('[ColdStart] Splash already dismissed — message push, user logged in, opening conversation');
@@ -674,7 +707,13 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
 
         // Handle deep linking based on notification data
         const data = response.notification.request.content.data;
-        console.log('[PushTap] type:', data?.type, 'farmstandId:', data?.farmstandId, 'claimId:', data?.claimId);
+        if (__DEV__) console.log('[PushTap] payload received — type:', data?.type,
+          'farmstandId:', data?.farmstandId ?? data?.farmstand_id,
+          'otherUserId:', data?.otherUserId ?? data?.other_user_id,
+          'conversationId:', data?.conversation_id ?? data?.conversationId,
+          'threadId:', data?.threadId ?? data?.thread_id,
+          'claimId:', data?.claimId,
+          '| raw keys present:', Object.keys(data ?? {}).join(','));
 
         if (data?.type === 'claim_denied' && data?.farmstandId) {
           // Denied claim: open the claim resubmission flow directly — NOT the public farmstand page
@@ -699,36 +738,40 @@ function RootLayoutNav({ colorScheme }: { colorScheme: 'light' | 'dark' | null |
               }
             });
           }
-        } else if (data?.type === 'message' || data?.threadId) {
+        } else if (data?.type === 'message' || data?.threadId || data?.thread_id) {
           // Message notification: open the conversation via the Inbox tab so
           // the back arrow returns to Inbox. If the user is not logged in, save
           // the target to the pending store so it fires automatically after login.
-          console.log('[PushTap] message push payload:', JSON.stringify(data));
 
           const tapUserId = useUserStore.getState().user?.id;
-          const tapFarmstandId = data?.farmstandId as string | undefined;
-          const tapOtherUserId = data?.otherUserId as string | undefined;
-          const tapConversationId = data?.conversation_id as string | undefined;
-          const tapThreadId = data?.threadId as string | undefined;
+          // Read both camelCase and snake_case — backend sends snake_case (farmstand_id, other_user_id)
+          // but older payloads may use camelCase. Always prefer camelCase if both are present.
+          const tapFarmstandId = (data?.farmstandId ?? data?.farmstand_id) as string | undefined;
+          const tapOtherUserId = (data?.otherUserId ?? data?.other_user_id) as string | undefined;
+          const tapConversationId = (data?.conversation_id ?? data?.conversationId) as string | undefined;
+          const tapThreadId = (data?.threadId ?? data?.thread_id) as string | undefined;
+
+          console.log('[PushTap] message push — farmstandId:', tapFarmstandId, 'otherUserId:', tapOtherUserId, 'conversationId:', tapConversationId, 'threadId:', tapThreadId, 'loggedIn:', !!(tapUserId && tapUserId !== 'guest'));
 
           if (tapUserId && tapUserId !== 'guest') {
             // Logged in — navigate immediately (existing behaviour)
             if (tapConversationId) {
-              console.log('[PushTap] message → conversation_id:', tapConversationId);
               if (tapFarmstandId && tapOtherUserId) {
+                console.log('[PushTap] routing → navigateToConversation with conversationId:', tapConversationId, 'farmstandId:', tapFarmstandId);
                 navigateToConversation({ farmstandId: tapFarmstandId, otherUserId: tapOtherUserId, conversationId: tapConversationId });
               } else {
-                console.log('[PushTap] message → conversation_id present but missing farmstandId/otherUserId — routing to Inbox');
+                console.log('[PushTap] conversationId present but missing farmstandId/otherUserId — routing to Inbox');
                 router.navigate('/(tabs)/inbox' as any);
               }
             } else if (tapFarmstandId && tapOtherUserId) {
-              console.log('[PushTap] message → direct conversation farmstandId:', tapFarmstandId, 'otherUserId:', tapOtherUserId);
+              console.log('[PushTap] routing → navigateToConversation farmstandId:', tapFarmstandId, 'otherUserId:', tapOtherUserId);
               navigateToConversation({ farmstandId: tapFarmstandId, otherUserId: tapOtherUserId });
             } else if (tapThreadId) {
-              console.log('[PushTap] message → legacy threadId:', tapThreadId);
+              console.log('[PushTap] routing → legacy /chat/' + tapThreadId);
               router.navigate('/(tabs)/inbox' as any);
               router.push(`/chat/${tapThreadId}` as any);
             } else {
+              console.log('[PushTap] no conversation params — routing to Inbox');
               router.navigate('/(tabs)/inbox' as any);
             }
           } else {

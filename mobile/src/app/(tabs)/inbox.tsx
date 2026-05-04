@@ -49,6 +49,8 @@ interface ConversationRow {
   updated_at: string;
   deleted_by_owner_at?: string | null;
   deleted_by_customer_at?: string | null;
+  customer_name?: string | null;
+  customer_avatar_url?: string | null;
   farmstands?: {
     name?: string | null;
     photos?: string[] | null;
@@ -702,8 +704,52 @@ export default function InboxScreen() {
             farmstand_deleted: !!(fs?.deleted_at),
             unread_count: unreadCount,
             viewer_is_owner: viewerIsOwner,
+            // Populate from customer snapshot stored on the conversation row
+            other_user_name: (viewerIsOwner && row.customer_name) ? row.customer_name : undefined,
+            other_user_avatar_url: (viewerIsOwner && row.customer_avatar_url) ? row.customer_avatar_url : undefined,
           };
         });
+
+        // Batch-fetch profiles as a fallback for owner-side conversations that don't
+        // yet have a customer_name snapshot on the conversation row (pre-snapshot conversations).
+        const ownerSideIds = [
+          ...new Set(
+            convs.filter(c => c.viewer_is_owner && !c.other_user_name).map(c => c.other_user_id)
+          ),
+        ];
+        if (ownerSideIds.length > 0) {
+          try {
+            const profilesUrl = new URL(`${supabaseUrl}/rest/v1/profiles`);
+            profilesUrl.searchParams.set('uid', `in.(${ownerSideIds.join(',')})`);
+            profilesUrl.searchParams.set('select', 'uid,full_name,avatar_url');
+            const profilesRes = await fetch(profilesUrl.toString(), {
+              headers: {
+                apikey: supabaseAnonKey,
+                Authorization: `Bearer ${session.access_token}`,
+              },
+            });
+            if (profilesRes.ok) {
+              const profileRows = await profilesRes.json() as { uid: string; full_name: string | null; avatar_url: string | null }[];
+              if (__DEV__) console.log('[InboxProfiles] loaded', profileRows.length, 'customer profile(s) for', ownerSideIds.length, 'owner-side conversations');
+              const profileMap = new Map(profileRows.map(p => [p.uid, p]));
+              for (const conv of convs) {
+                if (!conv.viewer_is_owner) continue;
+                const profile = profileMap.get(conv.other_user_id);
+                if (profile) {
+                  conv.other_user_name = profile.full_name ?? undefined;
+                  conv.other_user_avatar_url = profile.avatar_url ?? undefined;
+                  if (__DEV__) console.log('[InboxProfiles] customerId:', conv.other_user_id, '→ name:', profile.full_name ?? '(null)', '| hasAvatar:', !!profile.avatar_url);
+                } else {
+                  if (__DEV__) console.log('[InboxProfiles] no profile found for customerId:', conv.other_user_id);
+                }
+              }
+            } else {
+              if (__DEV__) console.log('[InboxProfiles] profiles fetch HTTP error:', profilesRes.status);
+            }
+          } catch (profileErr) {
+            if (__DEV__) console.log('[InboxProfiles] profiles fetch exception (non-fatal):', profileErr instanceof Error ? profileErr.message : String(profileErr));
+          }
+        }
 
         // Guard against AsyncStorage race: if dismissed data hasn't been loaded yet
         // (loadConversations fired before the useEffect that reads AsyncStorage resolved),

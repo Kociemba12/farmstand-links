@@ -236,9 +236,7 @@ function TrendingTile({ category, label, image, count, onPress, index }: Trendin
           style={{ width: tileWidth, height: tileWidth, position: 'absolute' }}
           contentFit="cover"
           cachePolicy="memory-disk"
-
           recyclingKey={image}
-          transition={300}
         />
         <LinearGradient
           colors={['transparent', 'rgba(0,0,0,0.75)']}
@@ -360,7 +358,6 @@ function FarmstandCard({
             contentFit="cover"
             cachePolicy="memory-disk"
             recyclingKey={imageUrl || 'fallback'}
-            transition={250}
             onError={() => setImgSource(fallbackHero)}
           />
           {/* Heart button — absolute positioned, does not affect layout flow */}
@@ -686,9 +683,9 @@ function TopSpotsCarousel({
       }}
       ListFooterComponent={onAddFarmstand ? <AddFarmstandCTACard onPress={onAddFarmstand} variant="large" /> : null}
       showsHorizontalScrollIndicator={false}
-      removeClippedSubviews={false}
-      initialNumToRender={6}
-      windowSize={5}
+      removeClippedSubviews={true}
+      initialNumToRender={3}
+      windowSize={3}
       contentContainerStyle={{ paddingLeft: leftPad, paddingRight: 8 }}
       style={{ flexGrow: 0 }}
     />
@@ -793,9 +790,9 @@ function HorizontalFarmstandList({
       )}
       ListFooterComponent={onAddFarmstand ? <AddFarmstandCTACard onPress={onAddFarmstand} variant={variant} /> : null}
       showsHorizontalScrollIndicator={false}
-      removeClippedSubviews={false}
-      initialNumToRender={6}
-      windowSize={5}
+      removeClippedSubviews={true}
+      initialNumToRender={3}
+      windowSize={3}
       contentContainerStyle={{ paddingLeft: leftPad, paddingRight: 8 }}
       style={{ flexGrow: 0 }}
     />
@@ -886,9 +883,10 @@ const [focusResetKey, setFocusResetKey] = useState(0);
     if (exploreReadySignaled.current) return;
     if (isAdminLoading || activeFarmstands.length === 0) return;
     exploreReadySignaled.current = true;
-    console.log('[Splash] Explore data ready —', activeFarmstands.length, 'farmstands');
+    if (__DEV__) console.log('[ImageLoad] Explore data ready —', activeFarmstands.length, 'farmstands; no manipulateAsync runs during display');
+    if (__DEV__) console.log('[ImageLoad] Section counts — topSpots:', topSpots.length, 'trending:', trendingCategories.length);
     const timer = setTimeout(() => {
-      console.log('[Splash] Visible images ready — signaling explore ready');
+      if (__DEV__) console.log('[ImageLoad] Settle timer fired — signaling explore ready');
       setExploreReady();
     }, 350);
     return () => clearTimeout(timer);

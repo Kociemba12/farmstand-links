@@ -226,6 +226,14 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
       const ct = res.headers.get('content-type') ?? '';
+
+      if (res.status === 401) {
+        // Badge-only endpoint — a 401 must never affect inbox messages or conversations.
+        // Log once and return; the badge will stay at its previous value.
+        console.log('[ChatStore][unread] 401 from unread-count — badge unavailable, inbox unaffected');
+        return;
+      }
+
       if (res.ok && ct.includes('application/json')) {
         const data = await res.json() as { unreadCount?: number };
         const count = data.unreadCount ?? 0;

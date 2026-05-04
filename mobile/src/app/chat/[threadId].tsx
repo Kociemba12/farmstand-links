@@ -544,12 +544,17 @@ export default function ChatScreen() {
   // Fetch the other user's profile from Supabase profiles table
   useEffect(() => {
     if (!resolvedOtherUserId || !isSupabaseConfigured()) return;
+    if (__DEV__) console.log('[ChatHeader] currentUserId:', user?.id, '| resolvedOtherUserId:', resolvedOtherUserId, '| currentUserIsFarmer:', currentUserIsFarmer);
     (async () => {
       const session = await getValidSession();
-      if (!session?.access_token) return;
+      if (!session?.access_token) {
+        if (__DEV__) console.log('[ChatHeader] no session — skipping profile fetch');
+        return;
+      }
       const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
       const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
       try {
+        if (__DEV__) console.log('[ChatHeader] fetching profile for otherUserId:', resolvedOtherUserId);
         const res = await fetch(
           `${supabaseUrl}/rest/v1/profiles?uid=eq.${resolvedOtherUserId}&select=uid,full_name,avatar_url&limit=1`,
           {
@@ -561,12 +566,26 @@ export default function ChatScreen() {
         );
         if (res.ok) {
           const rows = await res.json() as { full_name: string | null; avatar_url: string | null }[];
+          if (__DEV__) console.log('[ChatHeader] profile fetch returned', rows.length, 'row(s) | full_name:', rows[0]?.full_name ?? '(null)', '| hasAvatar:', !!rows[0]?.avatar_url);
           if (rows?.[0]) setOtherUserProfile(rows[0]);
+        } else {
+          if (__DEV__) console.log('[ChatHeader] profile fetch HTTP error:', res.status);
         }
-      } catch {}
+      } catch (err) {
+        if (__DEV__) console.log('[ChatHeader] profile fetch exception:', err instanceof Error ? err.message : String(err));
+      }
     })();
   }, [resolvedOtherUserId]);
 
+  if (__DEV__) {
+    const resolvedHeaderName = currentUserIsFarmer
+      ? (otherUserProfile?.full_name ?? counterpartyName ?? 'Customer')
+      : farmstandDisplayName;
+    console.log('[ChatHeader] resolveConversationDisplay — currentUserIsFarmer:', currentUserIsFarmer,
+      '| resolvedOtherUserId:', resolvedOtherUserId,
+      '| headerName:', resolvedHeaderName,
+      '| hasAvatar:', currentUserIsFarmer ? !!otherUserProfile?.avatar_url : !!farmstandDisplayPhoto);
+  }
   const { displayName, displayPhoto, displayType } = resolveConversationDisplay({
     viewerIsFarmstandOwner: currentUserIsFarmer,
     farmstandName: farmstandDisplayName,
@@ -858,6 +877,33 @@ export default function ChatScreen() {
         markConversationRead(farmstandId, otherUserId);
         // Silently refresh thread from server to pick up any concurrent incoming messages
         pollDirectMessages();
+        // Write customer identity snapshot so the owner's inbox shows the real name.
+        // Only the customer (non-owner) writes this; fire-and-forget.
+        if (!currentUserIsFarmer && user.name) {
+          ;(async () => {
+            try {
+              const snapSession = await getValidSession();
+              if (!snapSession?.access_token) return;
+              const snapUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+              const snapKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
+              const patchBody: Record<string, string> = { customer_name: user.name };
+              if (user.profilePhoto) patchBody.customer_avatar_url = user.profilePhoto;
+              await fetch(
+                `${snapUrl}/rest/v1/conversations?farmstand_id=eq.${farmstandId}&customer_id=eq.${user.id}&owner_id=eq.${otherUserId}`,
+                {
+                  method: 'PATCH',
+                  headers: {
+                    apikey: snapKey,
+                    Authorization: `Bearer ${snapSession.access_token}`,
+                    'Content-Type': 'application/json',
+                    Prefer: 'return=minimal',
+                  },
+                  body: JSON.stringify(patchBody),
+                }
+              );
+            } catch {}
+          })();
+        }
         if (__DEV__) {
           setSendStatus({ ok: true, msg: `message insert success — id: ${sent.id}` });
           console.log('[DEBUG handleSend] INSERT SUCCESS row:', JSON.stringify(sent));

@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -13,8 +13,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
-import { CommonActions } from '@react-navigation/native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SPLASH_GRADIENT, SPLASH_OVERLAY } from '@/lib/brand-colors';
 import { Mail, Lock, Eye, EyeOff } from 'lucide-react-native';
@@ -49,12 +48,12 @@ function AppleIcon() {
 
 export default function LoginScreen() {
   const router = useRouter();
-  const navigation = useNavigation();
   const { email: prefilledEmail } = useLocalSearchParams<{ email?: string }>();
   const signIn = useUserStore((s) => s.signIn);
   const loadUser = useUserStore((s) => s.loadUser);
   const continueAsGuest = useUserStore((s) => s.continueAsGuest);
-  const { notifySessionChanged } = useAuth();
+  const user = useUserStore((s) => s.user);
+  const { notifySessionChanged, loading: authLoading } = useAuth();
 
   const [email, setEmail] = useState(prefilledEmail ?? '');
   const [password, setPassword] = useState('');
@@ -65,6 +64,23 @@ export default function LoginScreen() {
   const [error, setError] = useState('');
   const [emailFocused, setEmailFocused] = useState(false);
   const [passwordFocused, setPasswordFocused] = useState(false);
+
+  // Redirecting: fires once when login succeeds — component unmounts when navigation lands
+  const [redirecting, setRedirecting] = useState(false);
+  const redirectingRef = useRef(false);
+  const goToApp = useCallback(() => {
+    if (redirectingRef.current) return;
+    redirectingRef.current = true;
+    setRedirecting(true);
+    router.replace('/(tabs)');
+  }, [router]);
+
+  // If a valid session already exists (e.g. session restored by bootstrap), navigate away
+  useEffect(() => {
+    if (!authLoading && user?.id && user.id !== 'guest') {
+      goToApp();
+    }
+  }, [user?.id, authLoading, goToApp]);
 
   // Legal modal state
   const [legalModalVisible, setLegalModalVisible] = useState(false);
@@ -199,13 +215,9 @@ export default function LoginScreen() {
         await AsyncStorage.setItem('farmstand_user', JSON.stringify(userProfile));
         await AsyncStorage.setItem('farmstand_logged_in', 'true');
 
+        goToApp();
         await loadUser();
-
-        // Navigate first — keep loading state so the form never flashes back to
-        // interactive while the transition is in progress.  The component unmounts
-        // after the reset so setIsLoading is not needed.
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        navigation.dispatch(CommonActions.reset({ index: 0, routes: [{ name: '(tabs)' }] }));
         return;
       }
     }
@@ -214,8 +226,8 @@ export default function LoginScreen() {
     const result = await signIn(cleanEmail, cleanPassword);
 
     if (result.success) {
+      goToApp();
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      navigation.dispatch(CommonActions.reset({ index: 0, routes: [{ name: '(tabs)' }] }));
     } else {
       setIsLoading(false);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -320,11 +332,11 @@ export default function LoginScreen() {
 
         await AsyncStorage.setItem('farmstand_user', JSON.stringify(userProfile));
         await AsyncStorage.setItem('farmstand_logged_in', 'true');
+        goToApp();
         await loadUser();
 
         socialLoadingRef.current = false;
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        navigation.dispatch(CommonActions.reset({ index: 0, routes: [{ name: '(tabs)' }] }));
       } else {
         socialLoadingRef.current = false;
         Alert.alert('Login failed', 'Please try again.');
@@ -382,6 +394,25 @@ export default function LoginScreen() {
   // Header height: top safe area + logo + tight padding
   // tight=true renders at 47px visible height (TIGHT_CONTENT_H); header = insets + 8(paddingTop) + 47 + 12(paddingBottom)
   const headerHeight = insets.top + 67;
+
+  // Auth is finishing — show gradient backdrop instead of the form so the login
+  // screen never flashes empty during the navigation transition.
+  if (redirecting) {
+    return (
+      <View style={{ flex: 1 }}>
+        <LinearGradient
+          colors={SPLASH_GRADIENT}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 1 }}
+          style={StyleSheet.absoluteFillObject}
+        />
+        <View style={StyleSheet.flatten([StyleSheet.absoluteFillObject, { backgroundColor: SPLASH_OVERLAY }])} />
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator size="large" color="rgba(255,255,255,0.7)" />
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
