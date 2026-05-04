@@ -266,7 +266,6 @@ export default function ProfileScreen() {
   const user = useUserStore((s) => s.user);
   const isLoggedIn = useUserStore((s) => s.isLoggedIn);
   const isGuest = useUserStore((s) => s.isGuest);
-  const location = useUserStore((s) => s.location);
   const loadUser = useUserStore((s) => s.loadUser);
   const signOut = useUserStore((s) => s.signOut);
   const supportUnreadCount = useSupportUnreadStore(s => s.unreadCount);
@@ -723,8 +722,6 @@ export default function ProfileScreen() {
   // ownedFarmstands is always an array from the store (never null)
   const resolvedOwned = ownedFarmstands;
   const primaryFarmstand = resolvedOwned[0];
-  const userLocation = location?.city && location?.state ? `${location.city}, ${location.state}` : null;
-
   // Single source of truth: user has a farmstand only when the query confirms it.
   // Never use user.isFarmer alone for farmstand-ownership UI — it is stale after delete.
   const hasFarmstand = farmstandsReady && resolvedOwned.length > 0;
@@ -743,23 +740,6 @@ export default function ProfileScreen() {
   // Determine if we have a hero image
   const heroImage = user.profilePhoto || DEFAULT_FARMSTAND_HERO;
 
-  // Get subtitle text
-  const getSubtitleText = () => {
-    if (isGuestUser) {
-      return userLocation ? `Guest • ${userLocation}` : 'Looking for fresh & local';
-    }
-    // Admins show as "Admin" not "Farmstand Manager"
-    if (isAdmin) {
-      return userLocation ? `Admin • ${userLocation}` : 'Admin';
-    }
-    // Only show farmstand subtitle when ownership data is authoritative
-    if (farmstandsReady && resolvedOwned.length > 0 && primaryFarmstand) {
-      // Show count if multiple farmstands
-      const countText = resolvedOwned.length > 1 ? ` (${resolvedOwned.length})` : '';
-      return `Farmstand Manager${countText} • ${primaryFarmstand.city}, ${primaryFarmstand.state}`;
-    }
-    return userLocation ? `Member • ${userLocation}` : 'Member';
-  };
 
   return (
     <View className="flex-1" style={{ backgroundColor: BG_COLOR }}>
@@ -844,11 +824,6 @@ export default function ProfileScreen() {
               style={{ fontSize: 24, fontWeight: '700', color: '#1C1917', letterSpacing: -0.3 }}
             >
               {user.name}
-            </Text>
-            <Text
-              style={{ fontSize: 14, color: '#57534E', marginTop: 4, lineHeight: 20 }}
-            >
-              {getSubtitleText()}
             </Text>
           </View>
 
