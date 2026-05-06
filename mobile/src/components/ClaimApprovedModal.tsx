@@ -550,14 +550,14 @@ export function ClaimApprovedModal({ visible, farmstandId, onDismiss }: ClaimApp
             {/* Legal links */}
             <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 16, gap: 6 }}>
               <Pressable
-                onPress={() => setLegalModal({ title: 'Privacy Policy', url: 'https://farmstand.online/privacy' })}
+                onPress={() => setLegalModal({ title: 'Privacy Policy', url: 'https://farmstand.online/privacy-policy' })}
                 style={({ pressed }) => ({ opacity: pressed ? 0.5 : 1 })}
               >
                 <Text style={{ fontSize: 12, color: '#A8A29E' }}>Privacy Policy</Text>
               </Pressable>
               <Text style={{ fontSize: 12, color: '#D6D3D1' }}>|</Text>
               <Pressable
-                onPress={() => setLegalModal({ title: 'Terms of Use', url: 'https://farmstand.online/terms' })}
+                onPress={() => setLegalModal({ title: 'Terms of Use', url: 'https://farmstand.online/terms-of-service' })}
                 style={({ pressed }) => ({ opacity: pressed ? 0.5 : 1 })}
               >
                 <Text style={{ fontSize: 12, color: '#A8A29E' }}>Terms of Use</Text>

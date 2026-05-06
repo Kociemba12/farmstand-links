@@ -1,5 +1,12 @@
 import React from 'react';
-import { View, Text, ScrollView, Pressable, Switch, Alert } from 'react-native';
+import { View, Text, ScrollView, Pressable, Switch, Alert, Linking } from 'react-native';
+
+const PRIVACY_POLICY_URL = 'https://farmstand.online/privacy-policy';
+const TERMS_OF_SERVICE_URL = 'https://farmstand.online/terms-of-service';
+
+function openLegalUrl(url: string) {
+  Linking.openURL(url).catch((e) => console.warn('[FarmerSettings] openURL failed', e));
+}
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
@@ -156,14 +163,14 @@ export default function FarmerSettingsScreen() {
           label: 'Terms of Service',
           description: 'View terms and conditions',
           type: 'link' as const,
-          onPress: () => router.push('/profile/terms'),
+          onPress: () => openLegalUrl(TERMS_OF_SERVICE_URL),
         },
         {
           icon: Shield,
           label: 'Privacy Policy',
           description: 'View privacy policy',
           type: 'link' as const,
-          onPress: () => router.push('/profile/privacy-policy'),
+          onPress: () => openLegalUrl(PRIVACY_POLICY_URL),
         },
       ],
     },

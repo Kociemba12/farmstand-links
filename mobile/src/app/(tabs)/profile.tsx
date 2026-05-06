@@ -52,6 +52,13 @@ const BG_COLOR = '#FAF7F2';
 
 const BACKEND_URL = (process.env.EXPO_PUBLIC_VIBECODE_BACKEND_URL ?? '').replace(/\/$/, '');
 
+const PRIVACY_POLICY_URL = 'https://farmstand.online/privacy-policy';
+const TERMS_OF_SERVICE_URL = 'https://farmstand.online/terms-of-service';
+
+function openLegalUrl(url: string) {
+  Linking.openURL(url).catch((e) => console.warn('[Profile] openURL failed', e));
+}
+
 // Default farmstand hero image - rustic produce stand with warm tones
 const DEFAULT_FARMSTAND_HERO = 'https://images.unsplash.com/photo-1488459716781-31db52582fe9?w=800&q=80';
 
@@ -861,14 +868,14 @@ export default function ProfileScreen() {
                   icon={Shield}
                   label="Privacy Policy"
                   subtitle="How we protect your data"
-                  onPress={() => handleMenuPress('/profile/privacy-policy')}
+                  onPress={() => openLegalUrl(PRIVACY_POLICY_URL)}
                   iconColor="#6B7280"
                 />
                 <MenuRow
                   icon={FileText}
                   label="Terms of Service"
                   subtitle="Our terms and conditions"
-                  onPress={() => handleMenuPress('/profile/terms')}
+                  onPress={() => openLegalUrl(TERMS_OF_SERVICE_URL)}
                   iconColor="#6B7280"
                   isLast
                 />

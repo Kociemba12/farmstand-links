@@ -9,7 +9,15 @@ import {
   Modal,
   TextInput,
   ActivityIndicator,
+  Linking,
 } from 'react-native';
+
+const PRIVACY_POLICY_URL = 'https://farmstand.online/privacy-policy';
+const TERMS_OF_SERVICE_URL = 'https://farmstand.online/terms-of-service';
+
+function openLegalUrl(url: string) {
+  Linking.openURL(url).catch((e) => console.warn('[Settings] openURL failed', e));
+}
 import {
   User,
   Lock,
@@ -202,14 +210,14 @@ export default function SettingsScreen() {
               icon={Shield}
               label="Privacy Policy"
               subtitle="How we protect your data"
-              onPress={() => handleItemPress('/profile/privacy-policy')}
+              onPress={() => openLegalUrl(PRIVACY_POLICY_URL)}
               iconColor="#6B7280"
             />
             <MenuRow
               icon={FileText}
               label="Terms of Service"
               subtitle="Our terms and conditions"
-              onPress={() => handleItemPress('/profile/terms')}
+              onPress={() => openLegalUrl(TERMS_OF_SERVICE_URL)}
               iconColor="#6B7280"
               isLast
             />
